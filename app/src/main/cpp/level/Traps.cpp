@@ -2,7 +2,8 @@
 // Created by LENOVO on 24-07-2026.
 //
 #include "Traps.h"
-#include "States/GameState/GameState.h"
+#include "States/LevelEditor/LevelEditor.h"
+
 namespace {
     inline uint32_t trapKey(TrapType type,TrapStatus status)
     {

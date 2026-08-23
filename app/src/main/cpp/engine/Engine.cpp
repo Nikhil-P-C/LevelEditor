@@ -4,14 +4,13 @@
 #include "SDL3_ttf/SDL_ttf.h"
 #include "utils/utils.h"
 #include "State/State.h"
-#include "engine/Engine.h"
-#include "States/GameState/GameState.h"
-#include "States/MenuState/TitleScreenState.h"
+#include "Engine.h"
+#include "States/LevelEditor/LevelEditor.h"
 
 void Engine::run(){
     m_assetManager.init(m_renderer);
 
-    pushState(std::make_unique<TitleScreenState>(m_renderer));
+    pushState(std::make_unique<LevelEditor>(m_renderer));
 
     unsigned int lastTime = SDL_GetTicks();
     unsigned int currentTime;

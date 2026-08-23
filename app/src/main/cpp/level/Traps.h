@@ -7,7 +7,7 @@
 #include <SDL3/SDL.h>
 #include "engine/Engine.h"
 #include "utils/utils.h"
-#include "States/GameState/ParticleSystem.h"
+#include "States/ParticleSystem.h"
 
 enum class TrapType{
     FALLING_PLATFORM=0,

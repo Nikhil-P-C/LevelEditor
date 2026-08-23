@@ -84,19 +84,26 @@ set(MYAPP_SOURCES
 #        States/MenuState/OptionMenuState/AdvanceMenuState.cpp
 #        States/MenuState/EditMenuState/EditMenuState.cpp
 #        States/PauseState/PauseState.cpp
-#
-#        engine/Engine.cpp
-#        engine/AssetManager.cpp
-#
-#        utils/Camera.cpp
-#        utils/gameMath.cpp
-#        utils/SpriteCollector.cpp
-#
-#        level/GroundShapeBuilder.cpp
-#        level/BlockShapeBuilder.cpp
-#        level/Fruits.cpp
-#        level/Traps.cpp
-#        level/LevelLoader/LevelLoader.cpp   States/inputOverlayState/JoystickOverlay.cpp
+
+        States/ParticleSystem.cpp
+
+        States/LevelEditor/LevelEditor.cpp
+
+        engine/Engine.cpp
+        engine/AssetManager.cpp
+
+        utils/Camera.cpp
+        utils/gameMath.cpp
+        utils/SpriteCollector.cpp
+
+        level/GroundShapeBuilder.cpp
+        level/BlockShapeBuilder.cpp
+        level/Fruits.cpp
+        level/Traps.cpp
+        level/LevelLoader/LevelLoader.cpp
+
+
+#        States/inputOverlayState/JoystickOverlay.cpp
 
 )
 

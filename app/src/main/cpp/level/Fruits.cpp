@@ -4,8 +4,8 @@
 //
 #include <SDL3/SDL.h>
 #include "Fruits.h"
-#include "States/GameState/GameState.h"
 #include "utils/utils.h"
+#include "States/LevelEditor/LevelEditor.h"
 std::vector<Fruit>& FruitBuilder::getFruits()
 {
     return m_fruits;
