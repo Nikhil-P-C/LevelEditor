@@ -1,0 +1,29 @@
+//
+// Created by LENOVO on 03-05-2026.
+//
+
+#pragma once
+#include "cmath"
+#include "level/GroundShapeBuilder.h"
+
+namespace gameMath{
+    enum class collisionSide{
+        TOP,
+        BOTTOM,
+        LEFT,
+        RIGHT,
+        NONE
+    };
+    bool collisionXY(float &x1, float &y1, float x2, float y2, float h1, float w1,
+                         float h2, float w2);
+    bool checkcollisionX(float x1, float y1, float x2, float y2, float h1, float w1,
+                         float h2, float w2);
+    collisionSide checkcollisionXY(float &x1, float &y1, float x2, float y2, float h1, float w1,
+                                   float h2, float w2);
+    bool checkcollision(float x1, float y1, float x2, float y2, float h1, float w1,
+                                  float h2, float w2);
+    collisionSide checkHazardCollision(float playerX,float playerY,float playerW,float playerH,const SDL_FRect& box);
+    collisionSide checkAdjacentWall(float x1, float y1, float x2, float y2, float h1, float w1,
+                                    float h2, float w2);
+    void interpolate(float& cameraX,float& cameraY,float targetX, float targetY ,float factor);
+}

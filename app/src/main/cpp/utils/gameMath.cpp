@@ -1,0 +1,246 @@
+//
+// Created by LENOVO on 03-05-2026.
+//
+#include "gameMath.h"
+#include "Platform.h"
+#include <cmath>
+#include <vector>
+
+namespace gameMath{
+    collisionSide checkHazardCollision(float playerX,float playerY,float playerW,float playerH,const SDL_FRect& box){
+        if(!(playerX < box.x + box.w &&
+             playerX + playerW > box.x &&
+             playerY < box.y + box.h &&
+             playerY + playerH > box.y)){
+            return collisionSide::NONE;        // no overlap test existed before
+        }
+        float overlapT = (playerY+playerH)-box.y;
+        float overlapB = (box.y+box.h)-playerY;
+        float overlapR = (box.x+box.w)-playerX;
+        float overlapL = (playerX+playerW)-box.x;
+
+        float minOverlap = SDL_min(SDL_min(overlapL,overlapR), SDL_min(overlapT,overlapB));
+        if(minOverlap == overlapT)return collisionSide::TOP;
+        if(minOverlap == overlapB)return collisionSide::BOTTOM;
+        if(minOverlap == overlapL)return collisionSide::LEFT;
+        return collisionSide::RIGHT;
+    }
+    collisionSide checkcollisionXY(float &x1, float &y1, float x2, float y2, float h1, float w1,
+                                  float h2, float w2) {
+        collisionSide side = collisionSide::NONE;
+        if (x1 < x2 + w2 &&
+            x1 + w1 > x2 &&
+            y1 < y2 + h2 &&
+            y1 + h1 > y2) {
+            float centerX1 = x1 + (w1 / 2);
+            float centerY1 = y1 + (h1 / 2);
+            float centerX2 = x2 + (w2 / 2);
+            float centerY2 = y2 + (h2 / 2);
+
+            float dx = centerX1 - centerX2;
+            float dy = centerY1 - centerY2;
+
+            float overlapX = ((w1 / 2) + (w2 / 2)) - fabs(dx);
+            float overlapY = ((h1 / 2) + (h2 / 2)) - fabs(dy);
+            if (overlapX > 0 && overlapY > 0) {
+                if (overlapX < overlapY) {
+                    // Push along X
+                    if (dx > 0){
+                        x1 += overlapX;
+                        side = collisionSide::RIGHT;
+                    }
+                    else {
+                        x1 -= overlapX;
+                        side =collisionSide::LEFT;
+                    }
+                }
+                else {
+                    // Push along Y
+                    if (dy > 0) {
+                        y1 += overlapY;
+                        side = collisionSide::BOTTOM;
+                    }
+                    else {
+                        y1 -= overlapY;
+                        side = collisionSide::TOP;
+                    }
+                }
+            }
+        }
+        return side;
+
+    }
+    bool checkcollisionX(float x1, float y1, float x2, float y2, float h1, float w1,
+                                   float h2, float w2) {
+
+        if (x1 < x2 + w2 &&
+            x1 + w1 > x2) {
+            float centerX1 = x1 + (w1 / 2);
+            float centerY1 = y1 + (h1 / 2);
+            float centerX2 = x2 + (w2 / 2);
+            float centerY2 = y2 + (h2 / 2);
+
+            float dx = centerX1 - centerX2;
+            float dy = centerY1 - centerY2;
+
+            float overlapX = ((w1 / 2) + (w2 / 2)) - fabs(dx);
+            float overlapY = ((h1 / 2) + (h2 / 2)) - fabs(dy);
+            if (overlapX > 0 && overlapY > 0) {
+                if (overlapX < overlapY) {
+                    // Push along X
+                    if (dx > 0){
+                        x1 += overlapX;
+
+                    }
+                    else {
+                        x1 -= overlapX;
+
+                    }
+                }
+                else {
+                    // Push along Y
+                    if (dy > 0) {
+                        y1 += overlapY;
+                    }
+                    else {
+                        y1 -= overlapY;
+
+                    }
+                }
+
+            }
+            return true;
+        }
+        return false;
+    }
+    bool checkcollision(float x1, float y1, float x2, float y2, float h1, float w1,
+                                   float h2, float w2) {
+//        collisionSide side = collisionSide::NONE;
+        if (x1 < x2 + w2 &&
+            x1 + w1 > x2 &&
+            y1 < y2 + h2 &&
+            y1 + h1 > y2) {
+            float centerX1 = x1 + (w1 / 2);
+            float centerY1 = y1 + (h1 / 2);
+            float centerX2 = x2 + (w2 / 2);
+            float centerY2 = y2 + (h2 / 2);
+
+            float dx = centerX1 - centerX2;
+            float dy = centerY1 - centerY2;
+
+            float overlapX = ((w1 / 2) + (w2 / 2)) - fabs(dx);
+            float overlapY = ((h1 / 2) + (h2 / 2)) - fabs(dy);
+
+            return true;
+        }
+        return false;
+
+    }
+    void interpolate(float& vX,float& vY,
+                     float targetX, float targetY ,float factor){// try values between 0.05f and 0.2f
+
+        // interpolate towards target
+        vX += (targetX - vX) * factor;
+        vY += (targetY - vY) * factor;
+    }
+
+    collisionSide gameMath::checkAdjacentWall(float x1, float y1, float x2, float y2, float h1, float w1,
+                                float h2, float w2) {
+        collisionSide side = collisionSide::NONE;
+        if (x1 < x2 + w2 &&
+            x1 + w1 > x2 &&
+            y1 < y2 + h2 &&
+            y1 + h1 > y2) {
+            float centerX1 = x1 + (w1 / 2);
+            float centerY1 = y1 + (h1 / 2);
+            float centerX2 = x2 + (w2 / 2);
+            float centerY2 = y2 + (h2 / 2);
+
+            float dx = centerX1 - centerX2;
+            float dy = centerY1 - centerY2;
+
+            float overlapX = ((w1 / 2) + (w2 / 2)) - fabs(dx);
+            float overlapY = ((h1 / 2) + (h2 / 2)) - fabs(dy);
+            if (overlapX > 0 && overlapY > 0) {
+                if (overlapX < overlapY) {
+                    // Push along X
+                    if (dx > 0){
+
+                        side = collisionSide::RIGHT;
+                    }
+                    else {
+
+                        side =collisionSide::LEFT;
+                    }
+                }
+                else {
+                    // Push along Y
+                    if (dy > 0) {
+
+                        side = collisionSide::BOTTOM;
+                    }
+                    else {
+
+                        side = collisionSide::TOP;
+                    }
+                }
+            }
+        }
+        return side;
+
+    }
+
+    bool gameMath::collisionXY(float &x1, float &y1, float x2, float y2, float h1, float w1,
+                                    float h2, float w2) {
+
+        if (x1 < x2 + w2 &&
+            x1 + w1 > x2 &&
+            y1 < y2 + h2 &&
+            y1 + h1 > y2) {
+            float centerX1 = x1 + (w1 / 2);
+            float centerY1 = y1 + (h1 / 2);
+            float centerX2 = x2 + (w2 / 2);
+            float centerY2 = y2 + (h2 / 2);
+
+            float dx = centerX1 - centerX2;
+            float dy = centerY1 - centerY2;
+
+            float overlapX = ((w1 / 2) + (w2 / 2)) - fabs(dx);
+            float overlapY = ((h1 / 2) + (h2 / 2)) - fabs(dy);
+            if (overlapX > 0 && overlapY > 0) {
+                if (overlapX < overlapY) {
+                    // Push along X
+                    if (dx > 0){
+                        x1 += overlapX;
+
+                    }
+                    else {
+                        x1 -= overlapX;
+
+                    }
+                }
+                else {
+                    // Push along Y
+                    if (dy > 0) {
+                        y1 += overlapY;
+                    }
+                    else {
+                        y1 -= overlapY;
+
+                    }
+                }
+
+            }
+            return true;
+        }
+        return false;
+    }
+
+    collisionSide
+    checkAdjacentWall(float &x1, float &y1, float x2, float y2, float h1, float w1, float h2,
+                      float w2) {
+        return collisionSide::LEFT;
+    }
+
+
+}
