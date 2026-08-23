@@ -1,0 +1,182 @@
+//
+// Created by LENOVO on 23-07-2026.
+//
+#include "ParticleSystem.h"
+#include "engine/Engine.h"
+#include <SDL3/SDL.h>
+#include "utils/utils.h"
+#include <random>
+
+static std::mt19937 rng(std::random_device{}());
+void ParticleSystem::render(SDL_Renderer* renderer)
+{
+
+    int camX = (int)std::round(Camera::getInstance().getCamera().x);
+    int camY = (int)std::round(Camera::getInstance().getCamera().y);
+    SDL_FRect src {0,0,16,16};
+    for(const auto& particle:m_particles)
+    {
+        if (!particle.isAlive)
+            continue;
+        float alpha = particle.life / particle.maxLife;
+        if(particle.size<0)continue;
+        SDL_SetTextureAlphaMod(
+                m_particleTexture,
+                static_cast<Uint8>(alpha * 255)
+        );
+        SDL_FRect dustDst{particle.x-camX,particle.y-camY,particle.size,particle.size};
+        SDL_RenderTexture(renderer,m_particleTexture, &src,&dustDst);
+    }
+}
+
+void ParticleSystem::update(float dt)
+{
+    for(auto& particle:m_particles)
+    {
+        float sizefactor = particle.life /particle.maxLife;
+        particle.size = particle.baseSize*sizefactor;
+        if(!particle.isAlive)
+            continue;
+        particle.life -= dt;
+        if(particle.life <=0)
+        {
+            particle.isAlive = false;
+            continue;
+        }
+        particle.x += particle.vX*dt;
+        particle.y += particle.vY*dt;
+    }
+}
+
+void ParticleSystem::emitOneJumpParticle(float feetX, float feetY)
+{
+    for(auto& particle:m_particles){
+        if(!particle.isAlive){
+            particle.isAlive = true;
+            particle.x =feetX;
+            particle.y =feetY;
+            particle.size =70.00f;
+            particle.baseSize=particle.size;
+            particle.vX =randomFloat(-100.00f,100.00f);
+            particle.vY =randomFloat(-300.00f,100.00f);
+
+            particle.life = 0.4f;
+            particle.maxLife=0.4f;
+            return;
+        }
+    }
+
+}
+
+void ParticleSystem::emitJumpDust(float feetX, float feetY)
+{
+    int burst =randomInt(2,4);
+    for(int i = 0; i< burst;i++)
+    {
+        emitOneJumpParticle(feetX, feetY);
+    }
+}
+void ParticleSystem::emitLeftDust(float feetX, float feetY)
+{
+    for(auto& particle:m_particles){
+        if(!particle.isAlive){
+            particle.isAlive = true;
+            particle.x =feetX;
+            particle.y =feetY;
+            particle.size =70.00f;
+            particle.baseSize=particle.size;
+            particle.vX =randomFloat(0,200);
+            particle.vY =randomFloat(-100,100);
+            particle.life = 0.4f;
+            particle.maxLife=0.4f;
+            return;
+        }
+    }
+}
+
+void ParticleSystem::emitRightDust(float feetX, float feetY) {
+    for(auto& particle:m_particles){
+        if(!particle.isAlive){
+            particle.isAlive = true;
+            particle.x =feetX;
+            particle.y =feetY;
+            particle.size =70.00f;
+            particle.baseSize=particle.size;
+            particle.vX =randomFloat(-100,0);
+            particle.vY =randomFloat(-100,100);
+            particle.life = 0.4f;
+            particle.maxLife=0.4f;
+            return;
+        }
+    }
+}
+
+void ParticleSystem::emitLandDust(float leftFeetX, float leftFeetY,float rightFeetX,float rightFeetY)
+{
+    int burst =3;
+    for(int i =0; i<burst;i++)
+    {
+        float randomX1 = randomFloat(rightFeetX,leftFeetX);
+        float randomX2 = randomFloat(rightFeetX,leftFeetX);
+
+
+        emitLeftDust(randomX1, leftFeetY);
+        emitRightDust(randomX2, rightFeetY);
+    }
+}
+
+ParticleSystem::ParticleSystem()
+{
+    m_particleTexture = Engine::Get().getAssetManager().getTexture(TextureType::DUST_PARTICLE);
+
+}
+void ParticleSystem::emitDust(float pointX, float pointY,int velocityX,int velocityY,float life,float size)
+{
+    for(auto& particle:m_particles){
+        if(!particle.isAlive){
+            particle.isAlive = true;
+            particle.x =pointX;
+            particle.y =pointY;
+            particle.size =size;
+            particle.baseSize=particle.size;
+            particle.vX =velocityX;
+            particle.vY =velocityY;
+
+            particle.life = life;
+            particle.maxLife=life;
+            return;
+        }
+    }
+}
+
+void ParticleSystem::emitParticleWProps(int count, int rangeX1, int rangeX2, int rangeY1, int rangeY2,
+                                        int velocityX1,int velocityX2 , int velocityY1,int velocityY2,
+                                        float minLife, float maxLife, int dirX, int dirY,float size)
+{
+    if(count <=0)return;
+    for(int i =0; i<count;i++)
+    {
+        int randomX = randomInt(rangeX1,rangeX2);
+        int randomY = randomInt(rangeY1,rangeY2);
+        int randomVx = randomInt(velocityX1,velocityX2);
+        float life = randomFloat(minLife,maxLife);
+
+
+        emitDust(randomX,randomY,randomVx,dirY,life,size);
+
+    }
+}
+
+
+
+float ParticleSystem::randomFloat(float min, float max)
+{
+    std::uniform_real_distribution<float> dist(min, max);
+    return dist(rng);
+}
+
+int ParticleSystem::randomInt(int min, int max)
+{
+    std::uniform_int_distribution<int> dist(min, max);
+    return dist(rng);
+}
