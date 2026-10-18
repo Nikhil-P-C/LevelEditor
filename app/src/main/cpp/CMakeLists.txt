@@ -57,7 +57,7 @@ set(SDLMIXER_WAV ON CACHE BOOL "" FORCE)
 set(WAVPACK_BUILD_ASM OFF CACHE BOOL "" FORCE)
 set(SDLMIXER_FLAC OFF CACHE BOOL "" FORCE)
 set(SDLMIXER_MP3 ON CACHE BOOL "" FORCE)
-set(SDLMIXER_OGG OFF CACHE BOOL "" FORCE)
+set(SDLMIXER_OGG ON CACHE BOOL "" FORCE)
 set(SDLMIXER_OPUS OFF CACHE BOOL "" FORCE)
 set(BUILD_PROGRAMS OFF)
 set(BUILD_EXAMPLES OFF)
@@ -67,30 +67,32 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/vendor/SDL_mixer EXCLUDE_FROM_ALL)
 # --- Shared source list ---
 set(MYAPP_SOURCES
         main.cpp
-#        States/inputOverlayState/ButtonOverlay.cpp
-#        States/inputOverlayState/SepJoysticknButton.cpp
-#        States/inputOverlayState/KeyboardOverlay.cpp
-#        States/inputOverlayState/GamepadOverlay.cpp
-#        States/DebugState/DebugState.cpp
-#        States/TransitionState/TransitionState.cpp
-#        States/HUDOverlayState/HUDOverlayState.cpp
-#        States/GameState/GameState.cpp
-#        States/GameState/ParticleSystem.cpp
-#        States/MenuState/TitleScreenState.cpp
-#        States/MenuState/MenuState.cpp
-#        States/MenuState/OptionMenuState/OptionMenuState.cpp
-#        States/MenuState/OptionMenuState/ControlMenuState.cpp
-#        States/MenuState/OptionMenuState/AudioMenuState.cpp
-#        States/MenuState/OptionMenuState/AdvanceMenuState.cpp
-#        States/MenuState/EditMenuState/EditMenuState.cpp
-#        States/PauseState/PauseState.cpp
-
-        States/ParticleSystem.cpp
-
-        States/LevelEditor/LevelEditor.cpp
+        States/inputOverlayState/ButtonOverlay.cpp
+        States/inputOverlayState/SepJoysticknButton.cpp
+        States/inputOverlayState/KeyboardOverlay.cpp
+        States/inputOverlayState/GamepadOverlay.cpp
+        States/DebugState/DebugState.cpp
+        States/TransitionState/TransitionState.cpp
+        States/HUDOverlayState/HUDOverlayState.cpp
+        States/GameState/GameState.cpp
+        States/GameState/ParticleSystem.cpp
+        States/GameState/AmbientParticles.cpp
+        States/MenuState/TitleScreenState.cpp
+        States/MenuState/MenuState.cpp
+        States/MenuState/MenuState.cpp
+        States/MenuState/OptionMenuState/OptionMenuState.cpp
+        States/MenuState/OptionMenuState/ControlMenuState.cpp
+        States/MenuState/OptionMenuState/AudioMenuState.cpp
+        States/MenuState/OptionMenuState/AdvanceMenuState.cpp
+        States/MenuState/EditMenuState/EditMenuState.cpp
+        States/PauseState/PauseState.cpp
+        States/RespawnState/RespawnState.cpp
+        States/MenuState/MenuKit.cpp
 
         engine/Engine.cpp
         engine/AssetManager.cpp
+        engine/PostProcessor.cpp
+        engine/Lighting.cpp
 
         utils/Camera.cpp
         utils/gameMath.cpp
@@ -98,13 +100,15 @@ set(MYAPP_SOURCES
 
         level/GroundShapeBuilder.cpp
         level/BlockShapeBuilder.cpp
+        level/WallTileBuilder.cpp
         level/Fruits.cpp
         level/Traps.cpp
+        level/Enemies.cpp
+        level/Interactables.cpp
+        level/BackGroundBuilder.cpp
+        level/ForeGroundBuilder.cpp
+
         level/LevelLoader/LevelLoader.cpp
-
-
-#        States/inputOverlayState/JoystickOverlay.cpp
-
 )
 
 # --- Your main native library / executable ---
@@ -118,6 +122,14 @@ endif()
 
 target_compile_definitions(main PRIVATE SDL_DISABLE_HIDAPI)
 
+# --- ENet ---
+file(GLOB ENET_SRC
+        ${CMAKE_CURRENT_SOURCE_DIR}/vendor/enet-1.3.18/*.c
+)
+add_library(enet STATIC ${ENET_SRC})
+target_include_directories(enet PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/vendor/enet-1.3.18/include
+)
 
 # --- Include directories ---
 target_include_directories(main PRIVATE
@@ -125,6 +137,7 @@ target_include_directories(main PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/vendor/SDL3_image/include
         ${CMAKE_CURRENT_SOURCE_DIR}/vendor/SDL3/include
         ${CMAKE_CURRENT_SOURCE_DIR}/vendor/SDL_mixer/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/vendor/enet-1.3.18/include
         ${CMAKE_CURRENT_SOURCE_DIR}/
 )
 
@@ -134,6 +147,7 @@ target_link_libraries(main
         SDL3_ttf::SDL3_ttf
         SDL3_image::SDL3_image
         SDL3::SDL3
+        enet
 )
 
 if(ANDROID)
@@ -141,4 +155,31 @@ if(ANDROID)
             android
             log
     )
+endif()
+
+# --- Level editor (desktop only): same game sources + editor/ -------------------------------
+#   cmake -S . -B build -DBUILD_LEVEL_EDITOR=ON      then build target "level_editor"
+option(BUILD_LEVEL_EDITOR "Build the level editor" ON)
+if(BUILD_LEVEL_EDITOR AND NOT ANDROID)
+    set(EDITOR_SOURCES
+            editor/Gfx.cpp
+            editor/LevelModel.cpp
+            editor/EditorScene.cpp
+            editor/EditorState.cpp
+            editor/Playtest.cpp)
+    add_executable(level_editor ${MYAPP_SOURCES} ${EDITOR_SOURCES} utils/PlayerData.cpp)
+    target_compile_definitions(level_editor PRIVATE LEVEL_EDITOR=1 SDL_DISABLE_HIDAPI
+            EDITOR_DEFAULT_ASSETS="${CMAKE_CURRENT_SOURCE_DIR}/../assets")
+    target_include_directories(level_editor PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/vendor/SDL_ttf/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/vendor/SDL3_image/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/vendor/SDL3/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/vendor/SDL_mixer/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/vendor/enet-1.3.18/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/
+            ${CMAKE_CURRENT_SOURCE_DIR}/editor/compat)
+    target_link_libraries(level_editor SDL3_mixer::SDL3_mixer SDL3_ttf::SDL3_ttf SDL3_image::SDL3_image SDL3::SDL3 enet)
+    if(WIN32)
+        target_link_libraries(level_editor ws2_32 winmm)
+    endif()
 endif()

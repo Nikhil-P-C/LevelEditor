@@ -1,6 +1,7 @@
 //
 // Created by LENOVO on 06-08-2026.
 //
+#include <algorithm>
 #include "LevelLoader.h"
 #include "LevelTypeConverter.h"
 
@@ -44,8 +45,34 @@ void LevelLoader::parseLine(const std::string& line) {
         case 'T':
             parseTraps(stream);
             break;
+        case 'E':
+            parseEnemy(stream);
+            break;
+        case 'I':
+            parseInteractable(stream);
+            break;
+        case '#':
+            break;   // comment line
         case 'C':
             parseCheckPoint(stream);
+            break;
+        case 'R':
+            parseWallCollisionRect(stream);
+            break;
+        case 'X':
+            parseBackGround(stream);
+            break;
+        case 'Y':
+            parseForeGround(stream);
+            break;
+        case 'D':
+            parseAmbient(stream);
+            break;
+        case 'L':
+            parseLight(stream);
+            break;
+        case 'M':
+            parseMusic(stream);
             break;
         default:
             LOGI("Failed to decode:%c",recordType);
@@ -66,6 +93,7 @@ void LevelLoader::parseSpawn(std::istringstream& ss) {
 
     m_player.x=spawnX;
     m_player.y=spawnY;
+    m_hasSpawn = true;
 
 }
 
@@ -189,6 +217,36 @@ void LevelLoader::parseFruits(std::istringstream& ss) {
     m_fruits.emplace_back(x,y,type);
 }
 
+void LevelLoader::parseBackGround(std::istringstream& ss){
+    float x=0.00f,y=0.00f,w = 0.00f,h=0.00f;
+    float parallaxFactorX=0.00f, parallaxFactorY=0.00f;
+    std::string typeStr;
+    bool isAnimated = false;
+    ss>>x>>y>>w>>h>>parallaxFactorX>>parallaxFactorY>>std::boolalpha>>isAnimated>>typeStr;
+
+    BackGroundType type = toBackGroundType(typeStr);
+    if(type == BackGroundType::NONE){
+        LOGI("invalid type for background");
+        return;
+    }
+    m_backGroundElements.emplace_back(x,y,w,h,parallaxFactorX,parallaxFactorY,isAnimated,type);
+}
+
+void LevelLoader::parseForeGround(std::istringstream &ss) {
+    float x=0.00f,y=0.00f,w = 0.00f,h=0.00f;
+    float parallaxFactorX=0.00f, parallaxFactorY=0.00f;
+    std::string typeStr;
+    bool isAnimated = false;
+    ss>>x>>y>>w>>h>>parallaxFactorX>>parallaxFactorY>>std::boolalpha>>isAnimated>>typeStr;
+
+    ForeGroundType type = toForeGroundType(typeStr);
+    if(type == ForeGroundType::NONE){
+        LOGI("invalid type for background");
+        return;
+    }
+    m_foreGroundElements.emplace_back(x,y,w,h,parallaxFactorX,parallaxFactorY,isAnimated,type);
+}
+
 void LevelLoader::parseTraps(std::istringstream& ss) {
     float x = 0.f, y = 0.f, startPath = 0.f, endPath = 0.f, speed = 0.f;
     std::string typeStr, statusStr, axisStr, shapeStr, colliderStr;
@@ -210,7 +268,12 @@ void LevelLoader::parseTraps(std::istringstream& ss) {
     trap.y = y;
     trap.baseX = x;//these are used as coords for starting corner of rect path must initialze them as spawn
     trap.baseY = y;
+    trap.previousX = x;
+    trap.previousY = y;
     trap.type = type;
+    if(type == TrapType::MOVING_PLATFORM_GREY || type == TrapType::MOVING_PLATFORM_BROWN){
+        LOGI("parseTraps: type=%d x=%.2f y=%.2f prevX=%.2f prevY=%.2f", (int)type, trap.x, trap.y, trap.previousX, trap.previousY);
+    }
     trap.status = toTrapStatus(statusStr);
     trap.startPath = startPath;
     trap.endPath = endPath;
@@ -234,6 +297,63 @@ void LevelLoader::parseTraps(std::istringstream& ss) {
         return;
     }
     m_traps.push_back(trap);
+}
+
+// I x y w h SPEAKER line one|line two|line three
+//   trigger area in world px; SPEAKER is one word (underscores -> spaces); each '|' piece is one dialog page
+void LevelLoader::parseInteractable(std::istringstream& ss) {
+    float x = 0.f, y = 0.f, w = 0.f, h = 0.f;
+    std::string speaker;
+    ss >> x >> y >> w >> h >> speaker;
+    if(ss.fail()){
+        LOGE("Malformed interactable (I) line: failed parsing fixed fields");
+        return;
+    }
+    std::string rest;
+    std::getline(ss, rest);
+    std::vector<std::string> lines;
+    size_t start = 0;
+    while(start <= rest.size()){
+        size_t bar = rest.find('|', start);
+        std::string piece = rest.substr(start, bar == std::string::npos ? std::string::npos : bar - start);
+        const size_t a = piece.find_first_not_of(" \t\r");
+        const size_t b = piece.find_last_not_of(" \t\r");
+        if(a != std::string::npos) lines.push_back(piece.substr(a, b - a + 1));
+        if(bar == std::string::npos) break;
+        start = bar + 1;
+    }
+    if(lines.empty()){
+        LOGE("Interactable has no dialog text, skipped");
+        return;
+    }
+    m_interactables.emplace_back(x, y, w, h, speaker, lines);
+}
+
+// E x y ENEMY_TYPE pathStartX pathEndX speed [AERIAL]
+//   x y            spawn position (world px). Ground enemies fall onto the floor, aerial ones hover at y
+//   pathStartX/End the horizontal patrol line (px); x should lie between them
+//   speed          patrol/chase speed in px/s
+//   AERIAL         optional: flies (no gravity) instead of walking
+// The enemy's starting attack is just its shortest-reach one; updateAI picks per attack from there.
+void LevelLoader::parseEnemy(std::istringstream& ss) {
+    float x = 0.f, y = 0.f, startPath = 0.f, endPath = 0.f, speed = 0.f;
+    std::string typeStr;
+    ss >> x >> y >> typeStr >> startPath >> endPath >> speed;
+    if(ss.fail()){
+        LOGE("Malformed enemy (E) line: failed parsing fixed fields");
+        return;
+    }
+    EnemyType type = toEnemyType(typeStr);
+    if(type == EnemyType::NONE) return;
+
+    combatType combat = combatType::GROUND;
+    std::string mode;
+    if(ss >> mode && mode == "AERIAL") combat = combatType::AERIAL;
+
+    const EnemyAIConfig* cfg = getEnemyAIConfig(type);
+    AttackType attack = cfg ? cfg->attacks[0] : AttackType::NONE;
+    m_enemies.emplace_back(x, y, type, EnemyAction::PATROL, attack, startPath, endPath, speed,
+                           PathAxis::HORIZONTAL, PathShape::LINE, 0.0f, combat);
 }
 
 void LevelLoader::parseSawTail(std::istringstream& ss,Trap& trap) {
@@ -264,8 +384,18 @@ void LevelLoader::parseSpikeBallTail(std::istringstream& ss,Trap& trap) {
     trap.showChain =showChain;
 }
 
+// optional last token on the trap line: UP | RIGHT | DOWN | LEFT (default UP) - see TrapOrientation
 void LevelLoader::parseGenericTail(std::istringstream& ss,Trap& trap) {
-    //do nothing : might remove this function later
+    std::string orientation;
+    if(ss>>orientation){
+        trap.orientation = toTrapOrientation(orientation);
+        if(!trapSupportsOrientation(trap.type) && trap.orientation != TrapOrientation::UP){
+            LOGI("trap type %d can't be rotated, orientation %s ignored",(int)trap.type,orientation.c_str());
+            trap.orientation = TrapOrientation::UP;
+        }
+    } else {
+        ss.clear();   // no token = normal end of line, not a parse failure (parseTraps checks ss.fail())
+    }
 }
 
 void LevelLoader::parseCheckPoint(std::istringstream& ss) {
@@ -283,16 +413,126 @@ void LevelLoader::parseCheckPoint(std::istringstream& ss) {
 
     m_checkPoint={x,y,w,h,flagType};
 }
+void LevelLoader::parseWallCollisionRect(std::istringstream& ss){
+    float x=0.00f,y=0.00f,w=0.00f,h=0.00f;
+    ss>>x>>y>>w>>h;
+    if(ss.fail()){
+        LOGE("Malformed wallCollisionRect line: failed parsing fixed fields");
+        return;
+    }
+    m_wallCollisionRect = {x,y,w,h};
+}
+void LevelLoader::parseAmbient(std::istringstream& ss) {
+    float darkness = 0.0f;
+    ss>>darkness;
+    if(ss.fail()){
+        LOGE("Malformed ambient (D) line");
+        return;
+    }
+    m_ambient.darkness = darkness;
+    float radius = 0.0f, softness = 0.0f;
+    if(ss>>radius>>softness){            // optional player light size
+        m_ambient.playerRadius = radius;
+        m_ambient.playerSoftness = softness;
+    }
+}
 
-void LevelLoader::loadLevel(int level) {
-    std::string content = loadFromFile("Levels/level_"+std::to_string(level)+".txt");
+void LevelLoader::parseLight(std::istringstream& ss) {
+    LightSource l;
+    int r=255,g=200,b=120;
+    ss>>l.x>>l.y>>l.radius>>r>>g>>b>>l.intensity;
+    if(ss.fail()){
+        LOGE("Malformed light (L) line: failed parsing fixed fields");
+        return;
+    }
+    l.r = (uint8_t)std::clamp(r,0,255);
+    l.g = (uint8_t)std::clamp(g,0,255);
+    l.b = (uint8_t)std::clamp(b,0,255);
+    float flicker = 0.0f;
+    int visible = 1;
+    if(ss>>flicker){
+        l.flicker = flicker;
+        if(ss>>visible) l.visible = visible != 0;
+    }
+    m_lights.push_back(l);
+}
 
+std::string LevelLoader::s_overrideContent;
+bool LevelLoader::s_hasOverride = false;
+int LevelLoader::s_overrideLevel = -1;
+
+void LevelLoader::setOverrideContent(const std::string& content, int levelNumber){
+    s_overrideContent = content;
+    s_hasOverride = true;
+    s_overrideLevel = levelNumber;
+}
+void LevelLoader::clearOverrideContent(){
+    s_overrideContent.clear();
+    s_hasOverride = false;
+    s_overrideLevel = -1;
+}
+bool LevelLoader::hasOverrideContent(){
+    return s_hasOverride;
+}
+
+// M file [gain]
+//   background music of this level (looped). file is relative to the assets folder; a bare name like
+//   cave.ogg means Sound/Music/cave.ogg. gain 0..1 trims this track (default 1). `M NONE` = silent level.
+void LevelLoader::parseMusic(std::istringstream& ss) {
+    std::string file;
+    ss>>file;
+    if(ss.fail()){
+        LOGE("Malformed music (M) line");
+        return;
+    }
+    float gain = 1.0f;
+    if(ss>>gain) gain = std::clamp(gain,0.0f,2.0f);
+    if(file == "NONE"){
+        m_musicPath.clear();
+        m_musicGain = 1.0f;
+        m_musicExplicit = true;
+        return;
+    }
+    if(file.find('/') == std::string::npos) file = "Sound/Music/" + file;
+    m_musicPath = file;
+    m_musicGain = gain;
+    m_musicExplicit = true;
+}
+
+void LevelLoader::resetParsedState() {
+    m_musicPath.clear();
+    m_musicGain = 1.0f;
+    m_musicExplicit = false;
+    m_lights.clear();
+    m_enemies.clear();
+    m_interactables.clear();
+    m_ambient = LevelAmbient{};
+    m_hasSpawn = false;
+}
+
+void LevelLoader::parseContent(const std::string& content) {
     std::istringstream stream(content);
 
     std::string line;
     while(std::getline(stream,line)){
         parseLine(line);
     }
+}
+
+void LevelLoader::loadLevelFromString(const std::string& content) {
+    resetParsedState();
+    parseContent(content);
+}
+
+void LevelLoader::loadLevel(int level) {
+    resetParsedState();
+    std::string content = s_hasOverride ? s_overrideContent
+                                        : loadFromFile("Levels/level_"+std::to_string(level)+".txt");
+    parseContent(content);
+    // no M record: use the convention Sound/Music/level_<n>.ogg (silent if that file doesn't exist);
+    // an editor playtest names the file after the level being edited, not after the placeholder level 0
+    const int musicLevel = (s_hasOverride && s_overrideLevel >= 0) ? s_overrideLevel : level;
+    if(!m_musicExplicit) m_musicPath = "Sound/Music/level_" + std::to_string(musicLevel) + ".ogg";
 }
 
 LevelLoader::LevelLoader() {

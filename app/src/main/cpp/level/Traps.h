@@ -7,7 +7,7 @@
 #include <SDL3/SDL.h>
 #include "engine/Engine.h"
 #include "utils/utils.h"
-#include "States/ParticleSystem.h"
+#include "States/GameState/ParticleSystem.h"
 
 enum class TrapType{
     FALLING_PLATFORM=0,
@@ -45,6 +45,21 @@ enum class PathShape{
     CIRCLE,
     NONE
 };
+// Which way a trap "faces" = where its tips / jet / launch point. UP is the original floor-mounted look.
+//   UP    = on the floor            RIGHT = on a LEFT wall, pointing right
+//   DOWN  = on the ceiling          LEFT  = on a RIGHT wall, pointing left
+// The sprite is rotated and the collision / hazard boxes are rotated with it (same shape, turned around the trap's centre).
+// For a sideways trap, (x,y) is the top-left of the ROTATED footprint (height/width swapped for non-square sprites).
+enum class TrapOrientation{
+    UP=0,
+    RIGHT,
+    DOWN,
+    LEFT
+};
+// traps that can be rotated (FAN keeps its upward blast, platforms / heads / saws are path-driven)
+constexpr bool trapSupportsOrientation(TrapType type){
+    return type == TrapType::SPIKES || type == TrapType::FIRE || type == TrapType::TRAMPOLINE;
+}
 struct TrapFrameInfo{
     TextureType texture;
     int frameW, frameH;
@@ -56,36 +71,45 @@ struct Trap{
     Trap()=default;
     Trap(float x, float y, TrapType type, TrapStatus status,float startPath,float endPath,
          float speed,PathAxis axis,PathShape shape,ColliderType colliderType,float radius =0,bool showChain =false);
+
     float x ,y;
+    float startPath=0.00f,endPath=0.00f;//for RECT path this is used a opposite corner of starting corner
+    float baseX =0.00f,baseY =0.00f;// this is same as spawn for path RECT it use as the starting corner
+    float movingSpeed = 150.00f;
+    float previousX = 0.00f, previousY = 0.00;
+    float pathAngle = 0.00f; //only used for trap that should move in circle or swing arcs
+    float radius = 0.00f;
+
+    int pathIndex = 1;
+
+    bool showChain =false;
+    bool isMovingForward =true;
+    bool isActivated =false;
+    bool hasHitEnd =false;
+
+    bool aniDone= false;
+
     TrapType type;
     TrapStatus status;
 
     PathAxis axis = PathAxis::AUTO;
     PathShape pathShape = PathShape::LINE;
+    TrapOrientation orientation = TrapOrientation::UP;   // see trapSupportsOrientation()
 
-    float startPath=0.00f,endPath=0.00f;//for RECT path this is used a opposite corner of starting corner
-    float baseX =0.00f,baseY =0.00f;// this is same as spawn for path RECT it use as the starting corner
-    float movingSpeed = 150.00f;
-    float previousX =0.00f, previousY = 0.00f;
-    float pathAngle = 0.00f; //only used for trap that should move in circle or swing arcs
-    float radius = 0.00f;
-    int pathIndex = 1;
-    bool showChain =false;
-    bool isMovingForward =true;
-    bool isActivated =false;
-    bool hasHitEnd =false;
-    unsigned int lastTime = 0.00f;
-    unsigned int lastSwitchTime =0.00f;
-    int aniStartFrame =0.00f;
-    int aniEndFrame=0.00f;
-    bool aniDone= false;
+    unsigned int lastTime = 0;
+    unsigned int lastSwitchTime =0;
+    int aniStartFrame =0;
+    int aniEndFrame=0;
+
     ColliderType colliderType;
 };
 const TrapFrameInfo* getTrapFrameInfo(TrapType type,TrapStatus status);
 const TextureType getChainTexture(TrapType type);
+
+
 class TrapBuilder{
 public:
-    std::vector<Trap>& getTraps();
+    const std::vector<Trap>& getTraps();
 
     void init(const std::vector<Trap>& traps);
 
@@ -107,14 +131,25 @@ public:
 
     SDL_FPoint getTrapDelta(int trapIndex);
 
+    // unit vector a trampoline throws the player along: (0,-1) up, (0,1) down, (1,0) right, (-1,0) left
+    SDL_FPoint getLaunchDir(int trapIndex) const;
+
     float checkFanForce(float playerX,float playerY,float playerW,float playerH,ParticleSystem& particleSystem);
 
     bool isSolid(int trapIndex);
+
+    // the LIVE traps (positions updated by update()/updatePath()) - GameState::m_traps is only the load-time copy
+    const std::vector<Trap>& getTraps() const { return m_traps; }
 
     bool checkFireCollision(int trapIndex, float playerX, float playerY, float playerW, float playerH);
 
     bool checkHazard(float playerX ,float playerY,float playerW,float playerH,
                      TrapType& outType,gameMath::collisionSide& outSide);
+
+    // pogo: does the player's downward slash box touch something a pogo bounce is allowed on?
+    // Only hazard traps (spikes, spike head/ball, saw, fire while lit) and rock heads count - never platforms,
+    // trampolines, fans etc. On a hit outX/outY is the centre of the overlap (for the spark).
+    bool checkPogoTarget(const SDL_FRect& slashBox, float& outX, float& outY);
 
     bool checkTrampolineBounce(int trapIndex,float playerX,float playerY,
                                float playerW,float playerH,ParticleSystem& particleSystem);

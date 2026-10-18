@@ -1,0 +1,45 @@
+#Level: Level-Number
+
+S spawn
+W walls
+R WallCollisionRect
+P Platforms
+G Grounds
+B Blocks
+F Fruits
+T Traps
+C CheckPoint
+D darkness [playerRadius playerSoftness]
+    ambient darkness 0..1 for the level + size of the light around the player (default 0.20 100 250)
+L x y radius r g b intensity [flicker] [visible]
+    light object in world pixels. r g b = 0..255, intensity 0..1, flicker 0..1 (torch wobble), visible 0/1 (glowing core)
+    example:  L 600 430 420 255 170 90 1.0 0.35 1
+
+E x y ENEMY_TYPE pathStartX pathEndX speed [AERIAL]
+    enemy that patrols the horizontal line pathStartX..pathEndX (x should be between them) at speed px/s.
+    ground enemies fall onto the floor from y, AERIAL ones fly and hover at y. ENEMY_TYPE = any EnemyType name
+    (SPIDER_CHILD, CAVE_RAT, HUNTER_EAGLE, ...). Each enemy picks its attack by distance (see Enemies.cpp).
+    example:  E 1200 600 CAVE_RAT 1000 1500 120
+
+I x y w h SPEAKER line one|line two|line three
+    interactable (sign / NPC): trigger area x y w h in world px, SPEAKER = one word shown in the name tab
+    (underscores become spaces), then the dialog text; each '|' starts a new page.
+    Walk into the area, press E (gamepad: north button, touch: tap the "!" bubble) to talk; the same
+    button advances the text. The player is held still while a dialog is open.
+    example:  I 300 560 64 208 OLD_MAN Welcome, traveler.|Mind the cave ahead.
+
+M file [gain]
+    level music (looped, streamed). file = bare name like cave.ogg -> Sound/Music/cave.ogg, or a path under the assets
+    folder. gain 0..2 trims this track (default 1; the player's music slider still applies). M NONE = silent level.
+    No M line: the game plays Sound/Music/level_<n>.ogg if that file exists. The menus keep their own music.
+    example:  M cave.ogg 0.8
+
+T ... [UP|RIGHT|DOWN|LEFT]
+    optional LAST token of a trap line: the way SPIKES / FIRE / TRAMPOLINE face (default UP = on the floor,
+    RIGHT = on a left wall, DOWN = on the ceiling, LEFT = on a right wall). The sprite and its hit boxes turn with it; a
+    sideways trap's x y is the top-left of the turned footprint. A wall trampoline throws the player sideways.
+    example:  T 1300 600 SPIKES IDLE 0 0 250 AUTO LINE SOLID RIGHT
+
+B x y w h VARIANT TYPE
+    HORIZONTAL / VERTICAL blocks are tiled at native tile size: end cap + repeated middle + end cap (the last middle
+    piece is clipped, not squashed). Use 1 tile (64) for the thickness. SINGLE / BLOCK are drawn as one piece.

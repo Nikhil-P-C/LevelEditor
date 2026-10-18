@@ -95,6 +95,86 @@ namespace {
         }
         return it->second;
     }
+
+    BackGroundType toBackGroundType(std::string_view stringBackGroundType){
+        static const std::unordered_map<std::string_view ,BackGroundType> map{
+                {"GREENERY_SKY",BackGroundType::GREENERY_SKY},
+                {"GREENERY_MOUNTAINS",BackGroundType::GREENERY_MOUNTAINS},
+                {"GREENERY_TREES",BackGroundType::GREENERY_TREES},
+                {"MEADOWS_SKY",BackGroundType::MEADOWS_SKY},
+                {"MEADOWS_CLOUD",BackGroundType::MEADOWS_CLOUD},
+                {"MEADOWS_FAR_PLAIN",BackGroundType::MEADOWS_FAR_PLAIN},
+                {"MEADOWS_FLOWER_FIELD",BackGroundType::MEADOWS_FLOWER_FIELD},
+                {"CAVE_SKY",BackGroundType::CAVE_SKY},
+                {"CAVE_FAR_OBJECT1",BackGroundType::CAVE_FAR_OBJECT1},
+                {"CAVE_FAR_LIGHT1",BackGroundType::CAVE_FAR_LIGHT1},
+                {"CAVE_FAR_OBJECT2",BackGroundType::CAVE_FAR_OBJECT2},
+                {"CAVE_FAR_LIGHT2",BackGroundType::CAVE_FAR_LIGHT2},
+                {"CAVE_FAR_OBJECT3",BackGroundType::CAVE_FAR_OBJECT3},
+                {"CAVE_FAR_OBJECT4",BackGroundType::CAVE_FAR_OBJECT4},
+                {"CAVE_FAR_LIGHT3",BackGroundType::CAVE_FAR_LIGHT3},
+                {"CAVE_FAR_OBJECT5",BackGroundType::CAVE_FAR_OBJECT5}
+
+
+        };
+        const auto& it = map.find(stringBackGroundType);
+        if(it == map.end()){
+            logUnknownToken("backGroundType",stringBackGroundType);
+            return BackGroundType::NONE;
+        }
+        return it->second;
+    }
+
+    ForeGroundType toForeGroundType(std::string_view stringForeGroundType){
+        static const std::unordered_map<std::string_view ,ForeGroundType> map{
+                {"GREENERY_NEAR_OBJECT",ForeGroundType::GREENERY_NEAR_OBJECT},
+                {"GREENERY_NEAR_GRASS",ForeGroundType::GREENERY_NEAR_GRASS},
+                {"MEADOWS_NEAR_FLOWERS",ForeGroundType::MEADOWS_NEAR_FLOWERS},
+                {"CAVE_NEAR_OBJECT",ForeGroundType::CAVE_NEAR_OBJECT}
+
+
+
+        };
+        const auto& it = map.find(stringForeGroundType);
+        if(it == map.end()){
+            logUnknownToken("ForeGroundType",stringForeGroundType);
+            return ForeGroundType::NONE;
+        }
+        return it->second;
+    }
+
+    EnemyType toEnemyType(std::string_view stringEnemyType){
+        static const std::unordered_map<std::string_view ,EnemyType> map{
+                {"SPIDER_CHILD",EnemyType::SPIDER_CHILD},
+                {"MOSS_GLOW_WORM",EnemyType::MOSS_GLOW_WORM},
+                {"MOSS_BAT",EnemyType::MOSS_BAT},
+                {"SINNERS_CHILD",EnemyType::SINNERS_CHILD},
+                {"CAVE_PREDATOR",EnemyType::CAVE_PREDATOR},
+                {"CAVE_RAT",EnemyType::CAVE_RAT},
+                {"SHAFTS_RAPTOR",EnemyType::SHAFTS_RAPTOR},
+                {"GIANT_BATS",EnemyType::GIANT_BATS},
+                {"SHAFTS_WORKER",EnemyType::SHAFTS_WORKER},
+                {"ANKYLOSAURUS_CHILD",EnemyType::ANKYLOSAURUS_CHILD},
+                {"HUNTER_RAPTOR",EnemyType::HUNTER_RAPTOR},
+                {"HUNTER_EAGLE",EnemyType::HUNTER_EAGLE},
+                {"PREDATOR_THEROPOD",EnemyType::PREDATOR_THEROPOD},
+                {"THEROPOD_CHILD",EnemyType::THEROPOD_CHILD},
+                {"PREDATOR_CAT",EnemyType::PREDATOR_CAT},
+                {"MOUNTAIN_CAT",EnemyType::MOUNTAIN_CAT},
+                {"CROCODYLOMORPH",EnemyType::CROCODYLOMORPH},
+                {"TARBOSAURUS_CHILD",EnemyType::TARBOSAURUS_CHILD},
+                {"TYRANNOSAURUS_REX_CHILD",EnemyType::TYRANNOSAURUS_REX_CHILD},
+                {"ALBERTOSAURUS",EnemyType::ALBERTOSAURUS},
+                {"DASPELTOSAURUS",EnemyType::DASPELTOSAURUS}
+        };
+        const auto& it = map.find(stringEnemyType);
+        if(it == map.end()){
+            logUnknownToken("enemyType",stringEnemyType);
+            return EnemyType::NONE;
+        }
+        return it->second;
+    }
+
     TrapType toTrapType(std::string_view stringTrapType){
         static const std::unordered_map<std::string_view ,TrapType> map{
                 {"FALLING_PLATFORM",TrapType::FALLING_PLATFORM},
@@ -128,6 +208,20 @@ namespace {
         if(it == map.end()){
             logUnknownToken("trapStatus",stringTrapStatus);
             return TrapStatus::NONE;
+        }
+        return it->second;
+    }
+    TrapOrientation toTrapOrientation(std::string_view stringOrientation){
+        static const std::unordered_map<std::string_view ,TrapOrientation> map{
+                {"UP",TrapOrientation::UP},
+                {"RIGHT",TrapOrientation::RIGHT},
+                {"DOWN",TrapOrientation::DOWN},
+                {"LEFT",TrapOrientation::LEFT}
+        };
+        const auto& it = map.find(stringOrientation);
+        if(it == map.end()){
+            logUnknownToken("trapOrientation",stringOrientation);
+            return TrapOrientation::UP;
         }
         return it->second;
     }

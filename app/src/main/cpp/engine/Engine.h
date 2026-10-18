@@ -4,6 +4,7 @@
 
 #include "State/State.h"
 #include "AssetManager.h"
+#include "PostProcessor.h"
 #include "utils/utils.h"
 #include <SDL3_mixer/SDL_mixer.h>
 #include <SDL3/SDL.h>
@@ -84,10 +85,25 @@ public:
     SDL_Window* getWindow(){
         return m_window;
     }
+    SDL_Renderer* getRenderer(){
+        return m_renderer;
+    }
+    // level editor: the playtest runs fullscreen, the editor itself is a normal window
+    void setFullscreen(bool fullscreen){
+        if(m_window) SDL_SetWindowFullscreen(m_window, fullscreen);
+    }
     AssetManager& getAssetManager(){
         return m_assetManager;
     }
+    PostProcessor& getPostProcessor(){
+        return m_postProcessor;
+    }
 private:
+    // input auto-detection (see engine/InputAutoDetect.h)
+    void handleGamepadHotplug(const SDL_Event& event);
+    void autoDetectInput(const SDL_Event& event);
+    void swapInputOverlay(ControlType type);
+
     std::vector<Command> m_CommandQueue;
     std::vector<std::unique_ptr<State>> m_States;
 
@@ -97,17 +113,14 @@ private:
     SDL_Window*   m_window = nullptr;
     SDL_Renderer* m_renderer = nullptr;
     SDL_Event     m_event;
-    SDL_IOStream* m_musicfile = SDL_IOFromFile("music.mp3", "rb");
-
-
-    MIX_Audio* m_audio = nullptr;
+    // Music is owned by AssetManager (menus play the menu music, each level plays its own).
     MIX_Mixer* m_mixer =nullptr;
-    MIX_Track* m_track = nullptr;
 
     bool m_running =true;
 
     //remove this after fix
     uint32_t lasttimelog =0;
-    AssetManager m_assetManager;
 
+    AssetManager m_assetManager;
+    PostProcessor m_postProcessor;
 };

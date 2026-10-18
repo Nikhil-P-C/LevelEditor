@@ -4,7 +4,6 @@
 #pragma once
 enum ControlType{
     BUTTONS =0,
-    JOYSTICK,
     SEP_JUMP_W_JOYSTICK,
     KEYBOARD,
     GAMEPAD
@@ -42,8 +41,23 @@ public:
     void setControlType(ControlType type){
         m_controlType= type;
     }
+    // true = the control scheme follows whatever device the player is using (touch / keyboard + mouse / gamepad).
+    // Picking a scheme by hand in the control menu turns it off, the AUTO DETECT row turns it back on.
+    bool isAutoInput() const{
+        return m_autoInput;
+    }
+    void setAutoInput(bool autoInput){
+        m_autoInput = autoInput;
+    }
     void setPaused(bool pause){
         m_paused =pause;
+    }
+    // level editor: true while a level is being play-tested from the editor
+    bool isPlaytest() const{
+        return m_playtest;
+    }
+    void setPlaytest(bool playtest){
+        m_playtest = playtest;
     }
     void toggleDebug(){
         m_debug=!m_debug;
@@ -86,9 +100,11 @@ private:
     int m_winHeight;
     bool m_debug=true;
     bool m_paused=false;
+    bool m_playtest=false;
     bool m_singlePlayer =true;
     float m_masterAudioScale= 1.0f;
     float m_musicAudioScale= 1.0f;
     float m_sfxAudioScale= 1.0f;
     ControlType m_controlType=ControlType::BUTTONS;
+    bool m_autoInput=true;
 };

@@ -1,28 +1,50 @@
 //
 // Created by LENOVO on 24-07-2026.
 //
+#include <algorithm>
 #include "Traps.h"
-#include "States/LevelEditor/LevelEditor.h"
-
+#include "States/GameState/GameState.h"
 namespace {
     inline uint32_t trapKey(TrapType type,TrapStatus status)
     {
         return (static_cast<uint32_t>(type) <<8 |static_cast<uint32_t>(status));
     }
 }
-std::vector<Trap> &TrapBuilder::getTraps()
+namespace {
+    inline bool isSideways(TrapOrientation o){
+        return o == TrapOrientation::LEFT || o == TrapOrientation::RIGHT;
+    }
+    // `r` is a box in WORLD coords that was worked out for the unrotated (UP) trap whose sprite cell is W x H.
+    // Returns the same box after the trap is turned to its orientation (rotation about the cell centre,
+    // cell top-left stays at trap.x/trap.y; sideways swaps the cell to H x W).
+    SDL_FRect orientBox(const Trap& trap, SDL_FRect r, float W, float H){
+        if(!trapSupportsOrientation(trap.type) || trap.orientation == TrapOrientation::UP) return r;
+        const float x = r.x - trap.x, y = r.y - trap.y, w = r.w, h = r.h;   // local to the cell
+        switch(trap.orientation){
+            case TrapOrientation::RIGHT:  // 90 deg clockwise
+                return { trap.x + (H - (y + h)), trap.y + x, h, w };
+            case TrapOrientation::DOWN:   // 180 deg
+                return { trap.x + (W - (x + w)), trap.y + (H - (y + h)), w, h };
+            case TrapOrientation::LEFT:   // 270 deg clockwise
+                return { trap.x + y, trap.y + (W - (x + w)), h, w };
+            default:
+                return r;
+        }
+    }
+}
+
+const std::vector<Trap> &TrapBuilder::getTraps()
 {
     return m_traps;
 }
 
-void TrapBuilder::init(const std::vector<Trap> &traps)
-
-{
+void TrapBuilder::init(const std::vector<Trap> &traps){
     m_traps =traps;
     unsigned int now = SDL_GetTicks();
     for(auto& trap : m_traps){
         trap.lastSwitchTime = now;
         trap.lastTime = now;
+
         if(const auto* info = getTrapFrameInfo(trap.type, trap.status)){
             trap.aniEndFrame = info->frameCount - 1;
         }
@@ -59,6 +81,19 @@ void TrapBuilder::render(SDL_Renderer *renderer)
         SDL_FRect Dst{trap.x - camX, trap.y - camY, info->frameW* SCALE, info->frameH * SCALE};
         SDL_FRect Src{0.0f+info->frameW*trap.aniStartFrame,0.0f,
                       static_cast<float>(info->frameW), static_cast<float>(info->frameH)};
+
+        if(trapSupportsOrientation(trap.type) && trap.orientation != TrapOrientation::UP){
+            // rotate the sprite about the centre of its (rotated) footprint
+            const float W = Dst.w, H = Dst.h;
+            const bool sideways = isSideways(trap.orientation);
+            const float footW = sideways ? H : W, footH = sideways ? W : H;
+            const float cx = trap.x - camX + footW * 0.5f, cy = trap.y - camY + footH * 0.5f;
+            SDL_FRect rotDst{cx - W * 0.5f, cy - H * 0.5f, W, H};
+            const double angle = trap.orientation == TrapOrientation::RIGHT ? 90.0 :
+                                 trap.orientation == TrapOrientation::DOWN  ? 180.0 : 270.0;
+            SDL_RenderTextureRotated(renderer,texture,&Src,&rotDst,angle,nullptr,SDL_FLIP_NONE);
+            continue;
+        }
 
         SDL_RenderTexture(renderer,texture,&Src,&Dst);
     }
@@ -180,7 +215,7 @@ void TrapBuilder::renderChain(SDL_Renderer* renderer, const Trap& trap, int camX
         LOGI("failed to load info type :%d ,status:%d", trap.type, trap.status);
         return;
     }
-        const float LINK_SPACING = 40.0f; // px between links, tune to your sprite size
+    const float LINK_SPACING = 40.0f; // px between links, tune to your sprite size
 
     if(trap.pathShape == PathShape::LINE) {
         SDL_FPoint a = (trap.axis == PathAxis::HORIZONTAL) ? SDL_FPoint{trap.startPath+(info->frameW*SCALE/2)-((8*SCALE)/2),
@@ -248,7 +283,7 @@ bool TrapBuilder::isSolid(int trapIndex) {
     auto& trap = m_traps[trapIndex];
 
     return trap.type == TrapType::MOVING_PLATFORM_GREY||trap.type == TrapType::MOVING_PLATFORM_BROWN||(trap.type == TrapType::ROCK_HEAD && trap.status != TrapStatus::HIT)||
-            trap.type==TrapType::FIRE ||trap.type == TrapType::FALLING_PLATFORM;
+           trap.type==TrapType::FIRE ||trap.type == TrapType::FALLING_PLATFORM;
 }
 
 gameMath::collisionSide TrapBuilder::resolveTrapCollision(int trapIndex,float &playerX, float& playerY,
@@ -279,14 +314,14 @@ gameMath::collisionSide TrapBuilder::resolveTrapCollision(int trapIndex,float &p
         if (velocityY > 0 && previousBottom <= sweptTopMax
             && currentBottom >= sweptTopMin
             && gameMath::checkcollisionX(playerX, playerY, trapCollider.x,
-                                             trapCollider.y,
-                                             playerH, playerW, trapCollider.h,
-                                             trapCollider.w)) {
+                                         trapCollider.y,
+                                         playerH, playerW, trapCollider.h,
+                                         trapCollider.w)) {
 
-                playerY = platformTop - playerH;
-                if(trap.type == TrapType::MOVING_PLATFORM_BROWN)
-                    trap.isActivated =true;
-                return gameMath::collisionSide::TOP;
+            playerY = platformTop - playerH;
+            if(trap.type == TrapType::MOVING_PLATFORM_BROWN)
+                trap.isActivated =true;
+            return gameMath::collisionSide::TOP;
         }
         else if(trap.type == TrapType::MOVING_PLATFORM_BROWN){
             trap.isActivated =false;
@@ -300,26 +335,34 @@ SDL_FRect TrapBuilder::getTrapCollisionBox(const Trap& trap) {
         LOGI("failed to load info type :%d ,status:%d", trap.type, trap.status);
         return{0.0f,0.0f,0.0f,0.0f};
     }
-    SDL_FRect rect{trap.x,trap.y,info->frameW*SCALE,info->frameH*SCALE};
+    SDL_FRect rect;
     switch(trap.type){
         case TrapType::MOVING_PLATFORM_BROWN:
         case TrapType::MOVING_PLATFORM_GREY:
-            return { trap.x+3, trap.y+7 , ((info->frameW)*SCALE)-6,(info->frameH) *SCALE-10 };
+            rect = { trap.x+3, trap.y+7 , ((info->frameW)*SCALE)-6,(info->frameH) *SCALE-10 };
+            break;
         case TrapType::FAN:
-            return { trap.x+3, trap.y , ((info->frameW)*SCALE)-3,(info->frameH) *SCALE };
+            rect = { trap.x+3, trap.y , ((info->frameW)*SCALE)-3,(info->frameH) *SCALE };
+            break;
         case TrapType::TRAMPOLINE:
-            return { trap.x+10 , trap.y+70 , (info->frameW-6)*SCALE, (info->frameH-20)*SCALE };
+            rect = { trap.x+10 , trap.y+70 , (info->frameW-6)*SCALE, (info->frameH-20)*SCALE };
+            break;
         case TrapType::FALLING_PLATFORM:
-            return { trap.x , trap.y, (info->frameW)*SCALE, info->frameH*SCALE };
+            rect = { trap.x , trap.y, (info->frameW)*SCALE, info->frameH*SCALE };
+            break;
         case TrapType::FIRE:
-            return { trap.x , trap.y+64, (info->frameW)*SCALE, (info->frameH-16)*SCALE};
+            rect = { trap.x , trap.y+64, (info->frameW)*SCALE, (info->frameH-16)*SCALE};
+            break;
         case TrapType::ROCK_HEAD:
             // only dangerous while actively hitting, not during the idle blink loop
-            return { trap.x+20, trap.y+20, (info->frameW-10)*SCALE, (info->frameH-10)*SCALE };
+            rect = { trap.x+20, trap.y+20, (info->frameW-10)*SCALE, (info->frameH-10)*SCALE };
+            break;
         default:
-            return { trap.x, trap.y, info->frameW*SCALE, info->frameH*SCALE };
+            rect = { trap.x, trap.y, info->frameW*SCALE, info->frameH*SCALE };
+            break;
     }
-    return rect;
+    // rotated traps (spikes / fire / trampoline on walls or ceilings): same box, turned with the sprite
+    return orientBox(trap, rect, info->frameW*SCALE, info->frameH*SCALE);
 }
 
 void TrapBuilder::triggerFall(int trapIndex) {
@@ -338,24 +381,67 @@ SDL_FRect TrapBuilder::getHazardHitBox(const Trap &trap) {
         LOGI("failed to load info type :%d ,status:%d", trap.type, trap.status);
         return{0.0f,0.0f,0.0f,0.0f};
     }
+    SDL_FRect rect;
     switch(trap.type){
         case TrapType::SPIKES:
-            return { trap.x, trap.y +36, (info->frameW-1)*SCALE, (info->frameH-9)*SCALE };
+            rect = { trap.x, trap.y +36, (info->frameW-1)*SCALE, (info->frameH-9)*SCALE };
+            break;
         case TrapType::SAW:
-            return { trap.x+10 , trap.y +10, (info->frameW-6)*SCALE, (info->frameH-6)*SCALE };
+            rect = { trap.x+10 , trap.y +10, (info->frameW-6)*SCALE, (info->frameH-6)*SCALE };
+            break;
         case TrapType::FIRE:
-            return { trap.x+12, trap.y+5, (info->frameW-6)*SCALE, (info->frameH-20)*SCALE };
+            rect = { trap.x+12, trap.y+5, (info->frameW-6)*SCALE, (info->frameH-20)*SCALE };
+            break;
         case TrapType::SPIKE_BALL:
-            return { trap.x+20 , trap.y+20, (info->frameW-9)*SCALE, (info->frameH-9)*SCALE };
+            rect = { trap.x+20 , trap.y+20, (info->frameW-9)*SCALE, (info->frameH-9)*SCALE };
+            break;
         case TrapType::ROCK_HEAD:
-            return { trap.x+20, trap.y+20, (info->frameW-10)*SCALE, (info->frameH-10)*SCALE };
+            rect = { trap.x+20, trap.y+20, (info->frameW-10)*SCALE, (info->frameH-10)*SCALE };
+            break;
         case TrapType::SPIKE_HEAD:
-            return { trap.x+40, trap.y+40, (info->frameW-20)*SCALE, (info->frameH-20)*SCALE };
+            rect = { trap.x+40, trap.y+40, (info->frameW-20)*SCALE, (info->frameH-20)*SCALE };
+            break;
         default:
-            return { trap.x, trap.y, info->frameW*SCALE, info->frameH*SCALE };
+            rect = { trap.x, trap.y, info->frameW*SCALE, info->frameH*SCALE };
+            break;
     }
+    // wall / ceiling spikes: the hurt zone is the floor-spike zone turned the same way as the sprite,
+    // so a vertical strip of spikes hurts exactly like a horizontal one does
+    return orientBox(trap, rect, info->frameW*SCALE, info->frameH*SCALE);
 }
 
+bool TrapBuilder::checkPogoTarget(const SDL_FRect& slashBox, float& outX, float& outY) {
+    if(slashBox.w <= 0.0f || slashBox.h <= 0.0f) return false;
+    for(const auto& trap : m_traps){
+        bool pogoable;
+        switch(trap.type){
+            case TrapType::SPIKES:
+            case TrapType::SPIKE_HEAD:
+            case TrapType::SPIKE_BALL:
+            case TrapType::ROCK_HEAD: pogoable = true; break;                         // rock head: bounceable in every state
+            case TrapType::SAW:       pogoable = trap.status == TrapStatus::ON; break;
+            case TrapType::FIRE:      pogoable = trap.status == TrapStatus::ON; break;  // only while it is lit (= a hazard)
+            default:                  pogoable = false; break;
+        }
+        // a downward slash only bounces off hazards whose tips face up (not wall / ceiling spikes)
+        if((trap.type == TrapType::SPIKES || trap.type == TrapType::FIRE) && trap.orientation != TrapOrientation::UP)
+            pogoable = false;
+        if(!pogoable) continue;
+
+        const SDL_FRect box = getHazardHitBox(trap);
+        if(box.w <= 0.0f || box.h <= 0.0f) continue;
+        if(gameMath::checkcollision(slashBox.x, slashBox.y, box.x, box.y, slashBox.h, slashBox.w, box.h, box.w)){
+            const float ox1 = std::max(slashBox.x, box.x);
+            const float ox2 = std::min(slashBox.x + slashBox.w, box.x + box.w);
+            const float oy1 = std::max(slashBox.y, box.y);
+            const float oy2 = std::min(slashBox.y + slashBox.h, box.y + box.h);
+            outX = (ox1 + ox2) * 0.5f;
+            outY = (oy1 + oy2) * 0.5f;
+            return true;
+        }
+    }
+    return false;
+}
 
 bool TrapBuilder::checkHazard(float playerX, float playerY, float playerW, float playerH,
                               TrapType& outType,gameMath::collisionSide& outSide) {
@@ -382,14 +468,13 @@ bool TrapBuilder::checkHazard(float playerX, float playerY, float playerW, float
     return false;
 }
 
-
 float TrapBuilder::checkFanForce(float playerX, float playerY, float playerW, float playerH,ParticleSystem& particleSystem) {
     const float FAN_FORCE = -500.0f; // px/s upward, tune against m_gravity/m_jumpVelocity
     for(const auto& trap : m_traps){
         SDL_FRect trapCollRect =getTrapCollisionBox(trap);
         if(trap.type != TrapType::FAN)continue;
         SDL_FRect sensorRect{trapCollRect.x,trapCollRect.y -700,
-                              trapCollRect.w,  trapCollRect.h +700+trapCollRect.h};
+                             trapCollRect.w,  trapCollRect.h +700+trapCollRect.h};
         if(trap.status == TrapStatus::ON){
             particleSystem.emitParticleWProps(1,(trapCollRect.x+trapCollRect.w/2)-40.00f,(trapCollRect.x+trapCollRect.w/2),
                                               trapCollRect.y-60,trapCollRect.y-30,-40,
@@ -403,6 +488,7 @@ float TrapBuilder::checkFanForce(float playerX, float playerY, float playerW, fl
     }
     return 0.0f;
 }
+
 bool TrapBuilder::checkFireCollision(int trapIndex,float playerX, float playerY, float playerW, float playerH) {
     if(trapIndex < 0 || trapIndex >= (int)m_traps.size()) return false;
     Trap& trap = m_traps[trapIndex];
@@ -422,6 +508,7 @@ bool TrapBuilder::checkFireCollision(int trapIndex,float playerX, float playerY,
         trap.aniEndFrame = info->frameCount-1;
     return true;
 }
+
 bool TrapBuilder::checkTrampolineBounce(int trapIndex,float playerX, float playerY,
                                         float playerW, float playerH,ParticleSystem& particleSystem) {
     if(trapIndex < 0 || trapIndex >= (int)m_traps.size()) return false;
@@ -601,18 +688,32 @@ void TrapBuilder::updatePath(float dt)
 }
 
 SDL_FPoint TrapBuilder::getTrapDelta(int trapIndex) {
-    if(trapIndex < 0 || trapIndex >= (int)m_traps.size()) return {0.0f,0.0f};
+    // in LevelLoader::parseTraps(), right after trap.previousY = y;
+    if(trapIndex < 0 || trapIndex >= (int)m_traps.size())
+        return {0.0f,0.0f};
+
     const Trap& trap = m_traps[trapIndex];
+
     return { trap.x - trap.previousX, trap.y - trap.previousY };
 }
 
+
+SDL_FPoint TrapBuilder::getLaunchDir(int trapIndex) const {
+    if(trapIndex < 0 || trapIndex >= (int)m_traps.size()) return {0.0f,-1.0f};
+    switch(m_traps[trapIndex].orientation){
+        case TrapOrientation::RIGHT: return { 1.0f, 0.0f};
+        case TrapOrientation::LEFT:  return {-1.0f, 0.0f};
+        case TrapOrientation::DOWN:  return { 0.0f, 1.0f};
+        default:                     return { 0.0f,-1.0f};
+    }
+}
 
 Trap::Trap(float x, float y, TrapType type, TrapStatus status, float startPath,float endPath,
            float speed,PathAxis axis,PathShape shape,ColliderType colliderType,float radius,
            bool showChain)
         :x(x),y(y),type(type),status(status),startPath(startPath),endPath(endPath),
-        movingSpeed(speed),axis(axis),pathShape(shape),baseX(x),baseY(y),colliderType(colliderType),
-        radius(radius),showChain(showChain)
+         movingSpeed(speed),axis(axis),pathShape(shape),baseX(x),baseY(y),colliderType(colliderType),
+         radius(radius),showChain(showChain),previousX(x),previousY(y)
 {
 
 }
@@ -631,80 +732,80 @@ const TrapFrameInfo* getTrapFrameInfo(TrapType type,TrapStatus status){
     static std::unordered_map<uint32_t ,TrapFrameInfo> table{
             {trapKey(TrapType::FALLING_PLATFORM,TrapStatus::OFF),
                     {TextureType::TRAP_FALLING_PLATFORM_OFF,
-                     32,10,1,50,false}},
+                            32,10,1,50,false}},
             {trapKey(TrapType::FALLING_PLATFORM,TrapStatus::ON),
                     {TextureType::TRAP_FALLING_PLATFORM_ON,
-                     32,10,4,50,true}},
+                            32,10,4,50,true}},
 
             {trapKey(TrapType::FAN,TrapStatus::OFF),
                     {TextureType::TRAP_FAN_OFF,
-                     24,8,1,50,false}},
+                            24,8,1,50,false}},
             {trapKey(TrapType::FAN,TrapStatus::ON),
                     {TextureType::TRAP_FAN_ON,
-                     24,8,4,50,true}},
+                            24,8,4,50,true}},
 
             {trapKey(TrapType::FIRE,TrapStatus::OFF),
                     {TextureType::TRAP_FIRE_OFF,
-                     16,32,1,50,false}},
+                            16,32,1,50,false}},
             {trapKey(TrapType::FIRE,TrapStatus::ON),
                     {TextureType::TRAP_FIRE_ON,
-                     16,32,3,50,true}},
+                            16,32,3,50,true}},
             {trapKey(TrapType::FIRE,TrapStatus::HIT),
                     {TextureType::TRAP_FIRE_HIT,
-                     16,32,4,50,false}},
+                            16,32,4,50,false}},
 
 
             {trapKey(TrapType::MOVING_PLATFORM_BROWN,TrapStatus::OFF),
                     {TextureType::TRAP_PLATFORM_BROWN_OFF,
-                     32,8,1,50,false}},
+                            32,8,1,50,false}},
             {trapKey(TrapType::MOVING_PLATFORM_BROWN,TrapStatus::ON),
                     {TextureType::TRAP_PLATFORM_BROWN_ON,
-                     32,8,8,50,true}},
+                            32,8,8,50,true}},
 
             {trapKey(TrapType::MOVING_PLATFORM_GREY,TrapStatus::OFF),
                     {TextureType::TRAP_PLATFORM_GREY_OFF,
-                     32,8,1,50,false}},
+                            32,8,1,50,false}},
             {trapKey(TrapType::MOVING_PLATFORM_GREY,TrapStatus::ON),
                     {TextureType::TRAP_PLATFORM_GREY_ON,
-                     32,8,8,50,true}},
+                            32,8,8,50,true}},
 
             {trapKey(TrapType::ROCK_HEAD,TrapStatus::IDLE),
                     {TextureType::TRAP_ROCK_HEAD_BLINK,
-                     42,42,4,200,true}},
+                            42,42,4,200,true}},
             {trapKey(TrapType::ROCK_HEAD,TrapStatus::HIT),
                     {TextureType::TRAP_ROCK_HEAD_HIT_BOTTOM,
-                     42,42,4,100,false}},
+                            42,42,4,100,false}},
 
             {trapKey(TrapType::SPIKE_HEAD,TrapStatus::IDLE),
                     {TextureType::TRAP_SPIKE_HEAD_BLINK,
-                     54,52,4,200,true}},
+                            54,52,4,200,true}},
             {trapKey(TrapType::SPIKE_HEAD,TrapStatus::HIT),
                     {TextureType::TRAP_SPIKE_HEAD_HIT_BOTTOM,
-                     54,52,4,100,false}},
+                            54,52,4,100,false}},
 
 
             {trapKey(TrapType::SAW,TrapStatus::OFF),
                     {TextureType::TRAP_SAW_OFF,
-                     38,38,1,50,false}},
+                            38,38,1,50,false}},
             {trapKey(TrapType::SAW,TrapStatus::ON),
                     {TextureType::TRAP_SAW_ON,
-                     38,38,8,50,true}},
+                            38,38,8,50,true}},
 
             {trapKey(TrapType::SPIKE_BALL,TrapStatus::IDLE),
                     {TextureType::TRAP_SPIKE_BALL,
-                     28,28,1,50,false}},
+                            28,28,1,50,false}},
 
 
             {trapKey(TrapType::SPIKES,TrapStatus::IDLE),
                     {TextureType::TRAP_SPIKE,
-                     16, 16, 1,50, false}},
+                            16, 16, 1,50, false}},
 
             {trapKey(TrapType::TRAMPOLINE,TrapStatus::IDLE),
                     {TextureType::TRAP_TRAMPOLINE,
-                     28, 28, 1,50, false}},
+                            28, 28, 1,50, false}},
             {trapKey(TrapType::TRAMPOLINE,TrapStatus::TRIGGERED),
                     {TextureType::TRAP_TRAMPOLINE_TRIGGER,
-                     28, 28, 8,50, false}}
+                            28, 28, 8,50, false}}
 
     };
 

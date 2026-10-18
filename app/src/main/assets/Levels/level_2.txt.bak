@@ -1,0 +1,14 @@
+#Level: 2
+
+# spawn
+S 109.00 600.00
+
+# walls
+W 0.00 -768.00 3200.00 768.00 MOSS_WALL SOLID
+W 0.00 0.00 3200.00 768.00 MOSS_WALL SOLID
+
+# world bounds (wall collision rect)
+R 0.00 -768.00 3200.00 1536.00
+
+# checkpoint
+C 2900.00 440.00 256.00 256.00 NO_FLAG

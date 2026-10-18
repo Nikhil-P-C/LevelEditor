@@ -13,3 +13,7 @@
 .externalNativeBuild
 .cxx
 local.properties
+/vendor
+/build
+/app/src/main/cpp/vendor/
+/app/src/main/cpp/build/

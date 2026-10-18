@@ -16,7 +16,7 @@ struct CheckPoint{
     float y=0.00f;
     float w=0.00f;
     float h=0.00f;
-    CheckPointAni aniType;
+    CheckPointAni aniType = CheckPointAni::NONE;
     int currentFrame=0;
     uint32_t aniLastTime =0;
     Animation ani;

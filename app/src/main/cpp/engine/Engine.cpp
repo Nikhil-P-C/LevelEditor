@@ -4,19 +4,37 @@
 #include "SDL3_ttf/SDL_ttf.h"
 #include "utils/utils.h"
 #include "State/State.h"
-#include "Engine.h"
-#include "States/LevelEditor/LevelEditor.h"
+#include "engine/Engine.h"
+#include "States/GameState/GameState.h"
+#include "States/MenuState/TitleScreenState.h"
+#include "States/InputOverlayState/ButtonOverlay.h"
+#include "States/InputOverlayState/SepJoysticknButton.h"
+#include "States/InputOverlayState/KeyboardOverlay.h"
+#include "States/InputOverlayState/GamepadOverlay.h"
+#include "engine/InputAutoDetect.h"
+#ifdef LEVEL_EDITOR
+#include "editor/EditorState.h"
+#include "editor/Playtest.h"
+#endif
 
 void Engine::run(){
-    m_assetManager.init(m_renderer);
+    m_assetManager.init(m_renderer,m_mixer);
 
-    pushState(std::make_unique<LevelEditor>(m_renderer));
+#ifdef LEVEL_EDITOR
+    pushState(std::make_unique<editor::EditorState>(m_renderer));
+#else
+    pushState(std::make_unique<TitleScreenState>(m_renderer));
+#endif
 
     unsigned int lastTime = SDL_GetTicks();
     unsigned int currentTime;
-    int framedelay = 1000/120;
+    int framedelay = 1000/60;
 
     GameData::getInstance().setSize(1600,720);
+
+    // apply the saved volume settings once at startup (before, they only applied after the sliders moved)
+    MIX_SetMixerGain(m_mixer,GameData::getInstance().getAudioScale());
+    m_assetManager.setMusicScale(GameData::getInstance().getMusicAudioScale());
 
 
     float lastMasterAudioScale = GameData::getInstance().getAudioScale();
@@ -25,20 +43,23 @@ void Engine::run(){
     float nowMusicAudioScale =0.0f;
     float lastMusicAudioScale = GameData::getInstance().getMusicAudioScale();
     while(m_running){
+
         nowMasterAudioScale = GameData::getInstance().getAudioScale();
         if(nowMasterAudioScale != lastMasterAudioScale)
             MIX_SetMixerGain(m_mixer,GameData::getInstance().getAudioScale());
 
         nowMusicAudioScale = GameData::getInstance().getMusicAudioScale();
         if(nowMusicAudioScale != lastMusicAudioScale)
-            MIX_SetTrackGain(m_track,GameData::getInstance().getMusicAudioScale());
+            m_assetManager.setMusicScale(GameData::getInstance().getMusicAudioScale());
         lastMasterAudioScale = nowMasterAudioScale;
         lastMusicAudioScale = nowMusicAudioScale;
 
         currentTime = SDL_GetTicks();
         float deltaTime =(float) (currentTime - lastTime) / 1000.0f;
         lastTime = currentTime;
-        //RENDER
+        const float kMaxDeltaTime = 1.0f / 30.0f;
+        if (deltaTime > kMaxDeltaTime) deltaTime = kMaxDeltaTime;
+
         for (auto& cmd : m_CommandQueue) {
             if (cmd.type == commandType::PUSH)
                 m_States.push_back(std::move(cmd.state));
@@ -61,35 +82,17 @@ void Engine::run(){
         m_CommandOverlayQueue.clear();
 
 
-
         SDL_RenderClear(m_renderer);
+
+        //RENDER
         for(const auto &state : m_States)
             state->render(m_renderer);
 
-
-
-
-        //remove this after fix
-        if(SDL_GetTicks() - lasttimelog > 1000) {
-
-            LOGI("overlay State name(in order:");
-            for (const auto &state: m_OverlayStates) {
-                LOGI("state name : %s ", state->Name.c_str());
-            }
-            LOGI("completed overlay State list after applying command");
-            //remove this after fix
-            LOGI("State name(in order:");
-            for(const auto& state : m_States){
-                LOGI("state name : %s ",state->Name.c_str());
-            }
-            LOGI("completed State list after applying command");
-
-            lasttimelog =SDL_GetTicks();
-        }
         for(const auto &state : m_OverlayStates)
             state->render(m_renderer);
 
         SDL_SetRenderDrawColor(m_renderer,33,31,48,255);
+
 
 
         SDL_RenderPresent(m_renderer);
@@ -97,6 +100,18 @@ void Engine::run(){
         //polling events from states
 
         while(SDL_PollEvent(&m_event)) {
+
+            // gamepads must be opened before SDL delivers their input, do it here so it works in menus too
+#ifdef LEVEL_EDITOR
+            if(m_event.type == SDL_EVENT_QUIT){      // window closed: the editor autosaves unsaved work first
+                Playtest::requestQuit();
+                continue;
+            }
+#endif
+            handleGamepadHotplug(m_event);
+            // switch the control scheme (and the on-screen overlay) to whatever device just sent input,
+            // before the event is dispatched so the very first press already reaches the right overlay
+            autoDetectInput(m_event);
 
             for (auto it = m_OverlayStates.rbegin(); it != m_OverlayStates.rend() ; ++it)
                 if((*it)->handleEvents(m_event))break;
@@ -128,13 +143,14 @@ void Engine::run(){
         }
     }
 }
+
 void Engine::exitEngine(){
     m_running =false;
     if(m_mixer)MIX_DestroyMixer(m_mixer);
-    if(m_audio)MIX_DestroyAudio(m_audio);
-    if(m_musicfile)SDL_CloseIO(m_musicfile);
 }
+
 Engine::Engine(){
+
     LOGI("engine constructor");
 
     if(!MIX_Init()){
@@ -154,32 +170,76 @@ Engine::Engine(){
         }
         SDL_free(gamepadIDs);
     }
+    // start-up guess: gamepad if one is plugged in, touch on Android, keyboard + mouse elsewhere.
+    // The first real input event corrects it (autoDetectInput).
+    if(GameData::getInstance().isAutoInput())
+        GameData::getInstance().setControlType(InputAutoDetect::guessInitial());
     if (!TTF_Init())
         LOGI("failed ttf:%s", SDL_GetError());
+#ifdef LEVEL_EDITOR
+    m_window = SDL_CreateWindow("Dino Level Editor", 1600, 720, SDL_WINDOW_RESIZABLE);
+#else
     m_window = SDL_CreateWindow("Dino", 0, 0, SDL_WINDOW_FULLSCREEN);
+#endif
     if (!m_window) {
         LOGE("Window creation failed: %s", SDL_GetError());
     }
+//    SDL_GPUDevice* device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, nullptr);
+    SDL_PropertiesID props = SDL_CreateProperties();
+    SDL_SetNumberProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true); // or however you're setting SPIR-V support
+    SDL_SetStringProperty(props, SDL_PROP_GPU_DEVICE_CREATE_NAME_STRING, nullptr);
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, false);
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_FEATURE_CLIP_DISTANCE_BOOLEAN, false);
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_FEATURE_DEPTH_CLAMPING_BOOLEAN, false);
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_FEATURE_INDIRECT_DRAW_FIRST_INSTANCE_BOOLEAN, false);
+    SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_FEATURE_ANISOTROPY_BOOLEAN, false);
+    SDL_GPUDevice* device = SDL_CreateGPUDeviceWithProperties(props);
+    SDL_DestroyProperties(props);
+    SDL_Log("GPU device creation failed: %s", SDL_GetError());
 
-    m_renderer = SDL_CreateRenderer(m_window, "opengles2");
+    SDL_Renderer* renderer = SDL_CreateGPURenderer(device,m_window);
+    if(!renderer) {
+#ifdef LEVEL_EDITOR
+        m_renderer = SDL_CreateRenderer(m_window, nullptr);      // desktop: let SDL pick (D3D / OpenGL / Metal / Vulkan)
+#else
+        m_renderer = SDL_CreateRenderer(m_window, "opengles2");
+#endif
+        LOGI("gpu renderer creation failed");
+    }
+    else {
+        LOGI("gpu renderer succeeded");
+        LOGI("GPU backend: %s", SDL_GetGPUDeviceDriver(device));
+        SDL_GPUShaderFormat formats = SDL_GetGPUShaderFormats(device);
+        SDL_Log("device:%p",device);
+        SDL_Log("SPIR-V supported: %d", (formats & SDL_GPU_SHADERFORMAT_SPIRV) != 0);
+        SDL_Log("DXBC: %d", (formats & SDL_GPU_SHADERFORMAT_DXBC) != 0);
+        SDL_Log("DXIL: %d", (formats & SDL_GPU_SHADERFORMAT_DXIL) != 0);
+        SDL_Log("MSL: %d", (formats & SDL_GPU_SHADERFORMAT_MSL) != 0);
+        SDL_Log("METALLIB: %d", (formats & SDL_GPU_SHADERFORMAT_METALLIB) != 0);
+        SDL_Log("PRIVATE: %d", (formats & SDL_GPU_SHADERFORMAT_PRIVATE) != 0);
+        SDL_Log("INVALID: %d", (formats & SDL_GPU_SHADERFORMAT_INVALID) != 0);
+
+        m_renderer = renderer;
+    }
     if (!m_renderer) {
         LOGE("Renderer creation failed: %s", SDL_GetError());
     }
+    m_postProcessor.init(m_renderer,device);
+#ifdef LEVEL_EDITOR
+    // letterbox: the editor UI and the fullscreen playtest keep the 1600x720 design space undistorted
+    SDL_SetRenderLogicalPresentation(m_renderer,1600,720,SDL_LOGICAL_PRESENTATION_LETTERBOX);
+#else
     SDL_SetRenderLogicalPresentation(m_renderer,1600,720,SDL_LOGICAL_PRESENTATION_STRETCH);
+#endif
     m_mixer = MIX_CreateMixerDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, nullptr);
     if (!m_mixer) {
         LOGE("Mixer creation failed: %s", SDL_GetError());
     }
 
-    m_audio = MIX_LoadAudio_IO(m_mixer,m_musicfile,false,false);
-    m_track = MIX_CreateTrack(m_mixer);
-    MIX_SetTrackAudio(m_track, m_audio);
-    MIX_PlayTrack(m_track,true);
-    MIX_SetTrackLoops(m_track,-1);
-
     const char* name = SDL_GetRendererName(m_renderer);
     LOGI("Renderer: %s", name);
 }
+
 Engine::~Engine(){
     LOGI("engine destructor");
     if(m_window)SDL_DestroyWindow(m_window);
@@ -187,5 +247,87 @@ Engine::~Engine(){
     SDL_Quit();
 }
 
+// ---- input auto-detection ----------------------------------------------------------------------
 
+namespace {
+    bool isInputOverlay(const State* s){
+        if(!s) return false;
+        return s->Name == "ButtonState" || s->Name == "JnBState" || s->Name == "JoystickState" ||
+               s->Name == "KeyboardState" || s->Name == "GamepadState";
+    }
+    const char* overlayNameFor(ControlType type){
+        switch(type){
+            case ControlType::BUTTONS:             return "ButtonState";
+            case ControlType::SEP_JUMP_W_JOYSTICK: return "JnBState";
+            case ControlType::KEYBOARD:            return "KeyboardState";
+            case ControlType::GAMEPAD:             return "GamepadState";
+        }
+        return "ButtonState";
+    }
+    std::unique_ptr<State> makeInputOverlay(ControlType type, SDL_Renderer* renderer){
+        switch(type){
+            case ControlType::SEP_JUMP_W_JOYSTICK: return std::make_unique<SepJoysticknButton>(renderer);
+            case ControlType::KEYBOARD:            return std::make_unique<KeyboardOverlay>(renderer);
+            case ControlType::GAMEPAD:             return std::make_unique<GamepadOverlay>(renderer);
+            case ControlType::BUTTONS:
+            default:                               return std::make_unique<ButtonOverlay>(renderer);
+        }
+    }
+}
 
+void Engine::handleGamepadHotplug(const SDL_Event& event){
+    if(event.type == SDL_EVENT_GAMEPAD_ADDED){
+        if(!SDL_GetGamepadFromID(event.gdevice.which)){          // not already opened at start-up
+            if(!SDL_OpenGamepad(event.gdevice.which))
+                LOGE("failed to open gamepad: %s", SDL_GetError());
+        }
+    }
+    else if(event.type == SDL_EVENT_GAMEPAD_REMOVED){
+        if(SDL_Gamepad* gp = SDL_GetGamepadFromID(event.gdevice.which))
+            SDL_CloseGamepad(gp);
+        // last pad unplugged while it was the active scheme: fall back to touch / keyboard
+        GameData& gd = GameData::getInstance();
+        if(gd.isAutoInput() && gd.getControlType() == ControlType::GAMEPAD && !SDL_HasGamepad()){
+            const ControlType fallback = InputAutoDetect::guessInitial(false);
+            gd.setControlType(fallback);
+            swapInputOverlay(fallback);
+        }
+    }
+}
+
+void Engine::autoDetectInput(const SDL_Event& event){
+    GameData& gd = GameData::getInstance();
+    if(!gd.isAutoInput()) return;
+    const InputAutoDetect::Device dev = InputAutoDetect::detect(event);
+    if(dev == InputAutoDetect::Device::NONE) return;
+
+    const ControlType current = gd.getControlType();
+    const ControlType next = InputAutoDetect::controlFor(dev, current);
+    if(next == current) return;
+
+    LOGI("input device changed: control type %d -> %d", (int)current, (int)next);
+    gd.setControlType(next);
+    swapInputOverlay(next);
+}
+
+// Replaces the live input overlay (if a level is running) with the one for `type`. It is swapped in place so the
+// overlay stack keeps its order and size: other states pop overlays by count (HUD, [debug], input).
+void Engine::swapInputOverlay(ControlType type){
+    bool swapped = false;
+    for(auto& overlay : m_OverlayStates){
+        if(isInputOverlay(overlay.get())){
+            if(overlay->Name == overlayNameFor(type)) continue;
+            overlay = makeInputOverlay(type, m_renderer);
+            swapped = true;
+        }
+    }
+    // an input overlay that is queued but not pushed yet (e.g. a level transition happening right now)
+    for(auto& cmd : m_CommandOverlayQueue){
+        if(cmd.type == commandType::PUSH && isInputOverlay(cmd.state.get()) && cmd.state->Name != overlayNameFor(type)){
+            cmd.state = makeInputOverlay(type, m_renderer);
+            swapped = true;
+        }
+    }
+    // drop whatever the old scheme had held down (a stuck run direction, a half-pressed jump...)
+    if(swapped) InputDispatcher::getInstance().inputLogClear();
+}

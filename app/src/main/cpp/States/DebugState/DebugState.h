@@ -1,0 +1,36 @@
+//
+// Created by LENOVO on 03-05-2026.
+//
+#pragma once
+
+#include "State/State.h"
+#include "States/GameState/GameState.h"
+
+#define LOG_TAG "DebugState"
+
+class DebugState : public State{
+public:
+    DebugState(SDL_Renderer* renderer, GameState *gameState);
+    ~DebugState() override;
+    void render(SDL_Renderer* renderer) override;
+    void update(float dt) override;
+    bool handleEvents(SDL_Event& event) override;
+private:
+    GameState* m_gameState;
+    std::vector<Platform> m_platforms;
+    SDL_FRect m_walls;
+    std::vector<LevelGround> m_grounds;
+    std::vector<Fruit> m_fruits;
+//    std::vector<Trap> m_traps;
+    TrapBuilder m_trapBuilder;
+    Player m_player;
+    CheckPoint m_checkPoint;
+    SDL_Texture*  m_fpsTexture       = nullptr;
+    TTF_Font*     m_font             = nullptr;
+    SDL_IOStream* m_fontFile         = SDL_IOFromFile("Fonts/Pixel Game.otf", "rb");
+    int m_framedelay = 1000/60;
+    unsigned int m_last = SDL_GetTicks();
+    int m_fps =0;
+    int m_frames =0;
+    int m_lastRenderedFrames=-1;
+};

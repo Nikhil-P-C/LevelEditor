@@ -2,6 +2,7 @@
 // Created by LENOVO on 23-07-2026.
 //
 #include "AssetManager.h"
+#include <cmath>
 #include <SDL3_image/SDL_image.h>
 SDL_Texture* AssetManager::getTexture(TextureType type){
 
@@ -12,8 +13,11 @@ SDL_Texture* AssetManager::getTexture(TextureType type){
     return nullptr;
 }
 
-MIX_Audio *AssetManager::getSound(std::string soundName){
-    //TODO implement getSound
+MIX_Audio *AssetManager::getSound(SoundType type){
+    if(m_soundTable[(unsigned int)type]) {
+        return m_soundTable[(unsigned int) type];
+    }
+    LOGI("the type that failed : %d",(int)type);
     return nullptr;
 }
 
@@ -39,6 +43,220 @@ void AssetManager::loadTexture(TextureType type, const std::string_view& filepat
 
 }
 
+void AssetManager::loadSound(SoundType type, const std::string_view &filepath) {
+    if(type >=SoundType::COUNT){
+        LOGI("out of bound");
+        return;
+    }
+    if(!m_mixer){
+        LOGI("loadSound called before the mixer exists");
+        return;
+    }
+    SDL_IOStream* ioStream =SDL_IOFromFile(filepath.data(),"rb");
+    if(!ioStream){
+        LOGI("failed to open sound:%s (%s)",filepath.data(),SDL_GetError());
+        return;
+    }
+    // Short SFX are decoded once at load time so playing them costs nothing per call (the old
+    // code decoded the file again on every play). Music stays compressed in RAM - it is big.
+    // closeio=true: SDL_mixer closes the stream itself, on success and on failure.
+    const bool predecode = (type != SoundType::MUSIC_BACKGROUND);
+    m_soundTable[(unsigned int)type] = MIX_LoadAudio_IO(m_mixer,ioStream,predecode,true);
+    if(!m_soundTable[(unsigned int)type]){
+        LOGI("failed to load sound:%s (%s)",filepath.data(),SDL_GetError());
+    }
+}
+
+// Listener is the player; SDL_mixer's listener is fixed at (0,0,0) and works in "units", not
+// pixels - a source 800px away would otherwise be 800 units away and basically silent.
+static constexpr float SFX_PIXELS_PER_UNIT = 200.0f;
+
+void AssetManager::setTrackWorldPosition(MIX_Track* track,float listenerX,float listenerY,float srcX,float srcY){
+    MIX_Point3D position{
+            (srcX - listenerX) / SFX_PIXELS_PER_UNIT,
+            -(srcY - listenerY) / SFX_PIXELS_PER_UNIT,   // screen Y grows down, mixer Y grows up
+            0.0f
+    };
+    MIX_SetTrack3DPosition(track,&position);
+}
+
+MIX_Track* AssetManager::acquireSfxTrack() {
+    if(!m_mixer) return nullptr;
+    for(auto& track : m_sfxPool){
+        if(!track){
+            track = MIX_CreateTrack(m_mixer);   // created lazily, once, then reused forever
+            if(!track){
+                LOGI("MIX_CreateTrack failed:%s",SDL_GetError());
+                return nullptr;
+            }
+            return track;
+        }
+        if(!MIX_TrackPlaying(track)) return track;
+    }
+    return nullptr;   // all voices busy - drop this sound
+}
+
+// Every one-shot SFX (player, enemies, UI, beam...) goes through here so the SFX slider applies to all of them.
+// Master volume is applied separately on the mixer; music has its own slider.
+static inline float sfxGain(float gain) {
+    return gain * GameData::getInstance().getSFXAudioScale();
+}
+
+void AssetManager::playSound(SoundType type) {
+    if(type >=SoundType::COUNT || !m_soundTable[(unsigned int)type]) return;
+    MIX_Track* track = acquireSfxTrack();
+    if(!track) return;
+    MIX_SetTrackAudio(track, m_soundTable[(unsigned int)type]);
+    MIX_SetTrack3DPosition(track,nullptr);   // pooled track may still be positional from last use
+    MIX_SetTrackGain(track,sfxGain(1.0f));
+    MIX_PlayTrack(track,0);                  // options is an SDL_PropertiesID: 0 = none (was `true` = bogus ID 1)
+}
+
+void AssetManager::playSoundAt(float listenerX, float listenerY, float srcX, float srcY, SoundType type, float gain) {
+    if(type >=SoundType::COUNT || !m_soundTable[(unsigned int)type]) return;
+    MIX_Track* track = acquireSfxTrack();
+    if(!track) return;
+    MIX_SetTrackAudio(track, m_soundTable[(unsigned int)type]);
+    setTrackWorldPosition(track,listenerX,listenerY,srcX,srcY);
+    MIX_SetTrackGain(track,sfxGain(gain));
+    MIX_PlayTrack(track,0);
+}
+
+unsigned int AssetManager::getSoundDurationMs(SoundType type) {
+    if(type >=SoundType::COUNT || !m_soundTable[(unsigned int)type]) return 0;
+    MIX_Audio* audio = m_soundTable[(unsigned int)type];
+    Sint64 frames = MIX_GetAudioDuration(audio);
+    if(frames < 0) return 0;   // MIX_DURATION_UNKNOWN / infinite
+    Sint64 ms = MIX_AudioFramesToMS(audio,frames);
+    return ms > 0 ? (unsigned int)ms : 0;
+}
+
+bool AssetManager::playSoundIfIdle(SoundType type,float gain) {
+    if(!m_mixer || type >=SoundType::COUNT) return false;
+    MIX_Audio* audio = m_soundTable[(unsigned int)type];
+    if(!audio) return false;
+
+    MIX_Track*& track = m_idleTracks[(unsigned int)type];
+    if(!track){
+        track = MIX_CreateTrack(m_mixer);
+        if(!track){
+            LOGI("MIX_CreateTrack failed:%s",SDL_GetError());
+            return false;
+        }
+    }
+    else if(MIX_TrackPlaying(track)){
+        return false;   // previous clip still playing - let it finish, don't restart/overlap
+    }
+
+    MIX_SetTrackAudio(track,audio);
+    MIX_SetTrack3DPosition(track,nullptr);
+    MIX_SetTrackGain(track,sfxGain(gain));
+    return MIX_PlayTrack(track,0);
+}
+
+void AssetManager::setPitchRatio(float ratio) {
+    if(!m_mixer) return;
+    if(ratio < 0.25f) ratio = 0.25f;
+    if(ratio > 2.0f)  ratio = 2.0f;
+    MIX_SetMixerFrequencyRatio(m_mixer, ratio);
+}
+
+void AssetManager::setHearingDamage(float muffle) { m_hearingFx.setMuffle(muffle); }
+
+void AssetManager::setHeartbeat(float level) { m_hearingFx.setHeartbeat(level); }
+
+void AssetManager::playBoom(float strength) { m_hearingFx.playBoom(strength); }
+
+void SDLCALL AssetManager::postMixThunk(void* userdata, MIX_Mixer*, const SDL_AudioSpec* spec, float* pcm, int samples) {
+    static_cast<AssetManager*>(userdata)->postMix(spec, pcm, samples);
+}
+
+void AssetManager::postMix(const SDL_AudioSpec* spec, float* pcm, int samples) {
+    m_hearingFx.process(pcm, samples, spec->channels, spec->freq);
+}
+
+void AssetManager::playMusic(SoundType type) {
+    if(type >=SoundType::COUNT || !m_soundTable[(unsigned int)type] || !m_mixer) return;
+    if(!m_musicTrack){
+        m_musicTrack = MIX_CreateTrack(m_mixer);
+        if(!m_musicTrack){
+            LOGI("MIX_CreateTrack failed:%s",SDL_GetError());
+            return;
+        }
+    }
+    MIX_StopTrack(m_musicTrack,0);   // replace whatever music was playing
+    MIX_SetTrackAudio(m_musicTrack, m_soundTable[(unsigned int)type]);
+    MIX_SetTrack3DPosition(m_musicTrack,nullptr);
+    MIX_SetTrackGain(m_musicTrack,GameData::getInstance().getMusicAudioScale());
+    MIX_SetTrackLoops(m_musicTrack,-1);
+    MIX_PlayTrack(m_musicTrack,0);
+}
+
+void AssetManager::playMusicAt(float listenerX, float listenerY, float srcX, float srcY, SoundType type) {
+    playMusic(type);
+    if(m_musicTrack) setTrackWorldPosition(m_musicTrack,listenerX,listenerY,srcX,srcY);
+}
+
+namespace {
+    constexpr const char* MENU_MUSIC_PATH = "Sound/Ambient/Ambient 2.ogg";
+}
+
+void AssetManager::playMusicFile(const std::string& path,float baseGain) {
+    if(!m_mixer) return;
+    if(path.empty()){ stopMusic(); return; }
+
+    // same file already playing: leave it alone (only refresh the trim in case it changed)
+    if(m_musicFileAudio && path == m_musicFilePath && m_musicTrack && MIX_TrackPlaying(m_musicTrack)){
+        m_musicBaseGain = baseGain;
+        MIX_SetTrackGain(m_musicTrack,GameData::getInstance().getMusicAudioScale() * m_musicBaseGain);
+        return;
+    }
+
+    SDL_IOStream* io = SDL_IOFromFile(path.c_str(),"rb");
+    if(!io){
+        LOGI("no music file:%s (%s)",path.c_str(),SDL_GetError());
+        stopMusic();
+        return;
+    }
+    // predecode=false: stream it, music is big. closeio=true: SDL_mixer closes the stream with the audio.
+    MIX_Audio* audio = MIX_LoadAudio_IO(m_mixer,io,false,true);
+    if(!audio){
+        LOGI("failed to load music:%s (%s)",path.c_str(),SDL_GetError());
+        stopMusic();
+        return;
+    }
+    if(!m_musicTrack){
+        m_musicTrack = MIX_CreateTrack(m_mixer);
+        if(!m_musicTrack){
+            LOGI("MIX_CreateTrack failed:%s",SDL_GetError());
+            MIX_DestroyAudio(audio);
+            return;
+        }
+    }
+    MIX_StopTrack(m_musicTrack,0);
+    MIX_SetTrackAudio(m_musicTrack,audio);
+    if(m_musicFileAudio) MIX_DestroyAudio(m_musicFileAudio);   // old file is no longer on the track
+    m_musicFileAudio = audio;
+    m_musicFilePath = path;
+    m_musicBaseGain = baseGain;
+    MIX_SetTrack3DPosition(m_musicTrack,nullptr);
+    MIX_SetTrackGain(m_musicTrack,GameData::getInstance().getMusicAudioScale() * m_musicBaseGain);
+    MIX_SetTrackLoops(m_musicTrack,-1);
+    MIX_PlayTrack(m_musicTrack,0);
+}
+
+void AssetManager::playMenuMusic() {
+    playMusicFile(MENU_MUSIC_PATH);
+}
+
+void AssetManager::stopMusic() {
+    if(m_musicTrack) MIX_StopTrack(m_musicTrack,0);
+    m_musicFilePath.clear();
+}
+
+void AssetManager::setMusicScale(float scale) {
+    if(m_musicTrack) MIX_SetTrackGain(m_musicTrack,scale * m_musicBaseGain);
+}
 
 AssetManager::~AssetManager()
 {
@@ -46,15 +264,27 @@ AssetManager::~AssetManager()
         SDL_DestroyTexture(texture);
     }
     LOGI("all texture destroyed");
+    for(auto& audio:m_soundTable){
+        if(audio) MIX_DestroyAudio(audio);
+        audio = nullptr;
+    }
+    if(m_musicFileAudio){ MIX_DestroyAudio(m_musicFileAudio); m_musicFileAudio = nullptr; }
 
 }
 
-void AssetManager::init(SDL_Renderer *renderer) {
+void AssetManager::init(SDL_Renderer *renderer,MIX_Mixer* mixer) {
 
     if(!renderer) {
         LOGI("(AssetManger)render is null");
         return;
     }
+    if(!mixer){
+        LOGI("(AssetManger)render is null");
+        return;
+    }
+
+    m_mixer =mixer;
+    MIX_SetPostMixCallback(m_mixer, &AssetManager::postMixThunk, this);   // hearing-damage filter lives here
     m_renderer =renderer;
     loadTexture(TextureType::YELLOW_SKIN,"sheets/DinoSprites - tard.png");
     loadTexture(TextureType::BLUE_SKIN,"sheets/DinoSprites - doux.png");
@@ -72,6 +302,10 @@ void AssetManager::init(SDL_Renderer *renderer) {
     loadTexture(TextureType::BUTTON_JUMP_BUTTON,"button/jump_button.png");
     loadTexture(TextureType::BUTTON_LEFT_BUTTON,"button/left_button.png");
     loadTexture(TextureType::BUTTON_RIGHT_BUTTON,"button/right_button.png");
+    loadTexture(TextureType::BUTTON_UP_BUTTON,"button/up_button.png");
+    loadTexture(TextureType::BUTTON_DOWN_BUTTON,"button/down_button.png");
+    loadTexture(TextureType::BUTTON_SLASH_BUTTON,"button/slash_button.png");
+    loadTexture(TextureType::BUTTON_MAGIC_BUTTON,"button/magic_button.png");
     loadTexture(TextureType::JOYSTICK_JOYSTICK_OUTERRING,"joystick/Joystick.png");
     loadTexture(TextureType::JOYSTICK_JOYSTICK_HANDLE,"joystick/SmallHandleFilledGrey.png");
     loadTexture(TextureType::MENU_BUTTONS,"button/buttons.png");
@@ -121,6 +355,53 @@ void AssetManager::init(SDL_Renderer *renderer) {
     loadTexture(TextureType::CHECKPOINT_FLAG_OUT,"CheckPoint/Checkpoint (Flag Out) (64x64).png");
     loadTexture(TextureType::CHECKPOINT_FLAG_NO,"CheckPoint/Checkpoint (No Flag).png");
     loadTexture(TextureType::TRANSITION,"misc/Transition.png");
+    loadTexture(TextureType::BG_GREENERY_SKY,"Background/Greenery/greenery_sky.png");
+    loadTexture(TextureType::BG_GREENERY_MOUNTAINS,"Background/Greenery/greenery_mountains.png");
+    loadTexture(TextureType::BG_GREENERY_TREES,"Background/Greenery/greenery_trees.png");
+    loadTexture(TextureType::FG_GREENERY_NEAR_GRASS,"ForeGround/Greenery/greenery_neargrass.png");
+    loadTexture(TextureType::FG_GREENERY_NEAR_OBJECT,"ForeGround/Greenery/greenery_nearobjects.png");
+    loadTexture(TextureType::BG_MEADOWS_SKY,"Background/Meadows/meadows_sky.png");
+    loadTexture(TextureType::BG_MEADOWS_CLOUDS,"Background/Meadows/meadows_cloud.png");
+    loadTexture(TextureType::BG_MEADOWS_FAR_PLAIN,"Background/Meadows/meadows_farplain.png");
+    loadTexture(TextureType::BG_MEADOWS_FLOWER_FIELD,"Background/Meadows/meadows_flowerfield.png");
+    loadTexture(TextureType::FG_MEADOW_NEAR_FLOWERS,"ForeGround/Meadows/meadows_foreground.png");
+    loadTexture(TextureType::BG_CAVE_SKY,"Background/Cave/cave_sky.png");
+    loadTexture(TextureType::BG_CAVE_FAR_LIGHT1,"Background/Cave/far_light1.png");
+    loadTexture(TextureType::BG_CAVE_FAR_LIGHT2,"Background/Cave/far_light2.png");
+    loadTexture(TextureType::BG_CAVE_FAR_LIGHT3,"Background/Cave/far_light3.png");
+    loadTexture(TextureType::BG_CAVE_FAR_OBJECT1,"Background/Cave/far_object1.png");
+    loadTexture(TextureType::BG_CAVE_FAR_OBJECT2,"Background/Cave/far_object2.png");
+    loadTexture(TextureType::BG_CAVE_FAR_OBJECT3,"Background/Cave/far_object3.png");
+    loadTexture(TextureType::BG_CAVE_FAR_OBJECT4,"Background/Cave/far_object4.png");
+    loadTexture(TextureType::BG_CAVE_FAR_OBJECT5,"Background/Cave/far_object5.png");
+    loadTexture(TextureType::FG_CAVE_NEAR_OBJECT,"ForeGround/Cave/near_object.png");
+
+    loadTexture(TextureType::PLAYER_DOUBLE_JUMP, "Skill/broken_wings.png");
+    loadTexture(TextureType::ATTACK_PLAYER_SLASH,"Attacks/slash.png");
+    loadTexture(TextureType::ATTACK_PLAYER_BEAM,"Attacks/beam_sprite.png");
+    loadTexture(TextureType::FX_SPARK_ENEMY,    "Attacks/hit_spark_enemy.png");     // hit effects (optional: generated fallback if missing)
+    loadTexture(TextureType::FX_SPARK_FINISHER, "Attacks/hit_spark_finisher.png");
+    loadTexture(TextureType::FX_SPARK_WALL,     "Attacks/hit_spark_wall.png");
+    loadTexture(TextureType::FX_SPARK_OBJECT,   "Attacks/hit_spark_object.png");
+    loadTexture(TextureType::FX_THRUST_1,       "Attacks/hit_thrust_1.png");
+    loadTexture(TextureType::FX_THRUST_2,       "Attacks/hit_thrust_2.png");
+
+    loadTexture(TextureType::ENEMY_SINNERS_CHILD_PATROL,"Enemy/sinner_child/sinner_child_patrol.png");
+    loadTexture(TextureType::ENEMY_SINNERS_CHILD_SEEK,"Enemy/sinner_child/sinner_child_seek.png");
+    loadTexture(TextureType::ENEMY_SINNERS_CHILD_DEAD,"Enemy/sinner_child/sinner_child_death.png");
+
+    loadSound(SoundType::SFX_FOOTSTEPS,"Sound/footstep/concrete_step.wav");
+    loadSound(SoundType::SFX_JUMP, "Sound/Jump/Jump.wav");
+    loadSound(SoundType::SFX_ATTACK_SLASH_HIT, "Sound/Slash/Hit/Hit.wav");
+    loadSound(SoundType::SFX_ATTACK_SLASH_COLLISION,"Sound/Slash/Collision/Slash_Collision.wav");
+    loadSound(SoundType::SFX_UI_MOVE,   "Sound/UI/ui_move.wav");
+    loadSound(SoundType::SFX_UI_CONFIRM,"Sound/UI/ui_confirm.wav");
+    loadSound(SoundType::SFX_UI_ENTER,  "Sound/UI/ui_enter.wav");
+    loadSound(SoundType::SFX_UI_PLAY,   "Sound/UI/ui_play.wav");
+    loadSound(SoundType::SFX_UI_OPEN,   "Sound/UI/ui_open.wav");
+    loadSound(SoundType::SFX_UI_QUIT,   "Sound/UI/ui_quit.wav");
+    loadSound(SoundType::SFX_UI_INTRO,  "Sound/UI/ui_intro.wav");
+
     for(const auto & texture: m_textureTable){
         SDL_SetTextureScaleMode(texture,SDL_SCALEMODE_NEAREST);
     }
