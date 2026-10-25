@@ -12,6 +12,7 @@
 #include "level/ForeGroundBuilder.h"
 #include "level/Lights.h"
 #include "level/Enemies.h"
+#include "level/Bosses.h"
 #include "level/Interactables.h"
 #include <sstream>
 #include <filesystem>
@@ -20,7 +21,15 @@
 #define LOG_TAG "LevelLoader"
 
 // highest level_N.txt that exists; TransitionState wraps back to level 0 after this one
-constexpr int LAST_LEVEL = 10;
+constexpr int LAST_LEVEL = 23;
+
+// Play order = plain numerical order (level_0, level_1, ... level_LAST_LEVEL). Boss levels are NOT interleaved:
+// 0-10 are the normal levels, 11-23 are the 13 boss test levels:
+//   11/12 Moss mini+main, 13/14 Stone, 15/16 Shaft, 17/18 Plains, 19/20 Woods, 21/22 Mountain, 23 Peak (the Preacher)
+// the level that follows `level` (wraps to level 0 after LAST_LEVEL)
+inline int nextLevelAfter(int level){
+    return (level + 1 > LAST_LEVEL) ? 0 : level + 1;
+}
 
 class LevelLoader{
 public:
@@ -71,6 +80,8 @@ public:
     const std::vector<Enemy>& getEnemies(){
         return m_enemies;
     }
+    // boss fights: 'K' records (see parseBoss). Boss levels also have an 'A' arena rect (see parseBossArena).
+    const std::vector<Boss>& getBosses() const { return m_bosses; }
     CheckPoint getCheckPoint(){
         return m_checkPoint;
     }
@@ -83,6 +94,8 @@ public:
     const LevelAmbient& getAmbient(){
         return m_ambient;
     }
+    // 'Z' record: ambience/weather overrides (upper-case tokens, see AmbienceFx.h). Empty = biome defaults.
+    const std::vector<std::string>& getWeatherTokens() const { return m_weatherTokens; }
     // level music: from the level's 'M' record, else Sound/Music/level_<n>.ogg. Empty = silent level.
     const std::string& getMusicPath() const { return m_musicPath; }
     float getMusicGain() const { return m_musicGain; }
@@ -96,6 +109,8 @@ private:
     static int s_overrideLevel;
 
     void parseAmbient(std::istringstream& ss);
+
+    void parseWeather(std::istringstream& ss);
 
     void parseMusic(std::istringstream& ss);
 
@@ -121,6 +136,8 @@ private:
 
     void parseEnemy(std::istringstream& ss);
     void parseInteractable(std::istringstream& ss);
+    void parseBoss(std::istringstream& ss);
+    void parseBossArena(std::istringstream& ss);
 
     void parseTraps(std::istringstream& ss);//some traps have additional param trailing at end
 
@@ -146,12 +163,16 @@ private:
     std::vector<Block> m_blocks;
     std::vector<Enemy> m_enemies;
     std::vector<Interactable> m_interactables;
+    std::vector<Boss> m_bosses;
+    bool m_hasBossArena = false;
+    SDL_FRect m_bossArena{0.0f,0.0f,0.0f,0.0f};
     std::vector<BackGroundElement> m_backGroundElements;
     std::vector<ForeGroundElement> m_foreGroundElements;
     CheckPoint m_checkPoint;
     SDL_FRect m_wallCollisionRect;
     std::vector<LightSource> m_lights;
     LevelAmbient m_ambient;
+    std::vector<std::string> m_weatherTokens;   // 'Z' line
     bool m_hasSpawn = false;
     std::string m_musicPath;
     float m_musicGain = 1.0f;

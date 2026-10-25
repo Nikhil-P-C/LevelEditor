@@ -154,6 +154,82 @@ bool AssetManager::playSoundIfIdle(SoundType type,float gain) {
     return MIX_PlayTrack(track,0);
 }
 
+// ---- environment beds -------------------------------------------------------------------------------
+static const char* const AMBIENT_LOOP_FILES[(int)AmbientLoop::COUNT] = {
+        "Sound/Ambient_Environment/rain_light_loop_01.ogg",
+        "Sound/Ambient_Environment/wind_light_loop_01.ogg",
+};
+
+void AssetManager::setAmbientLoop(AmbientLoop id,float gain) {
+    const int i = (int)id;
+    if(!m_mixer || i < 0 || i >= AMBIENT_LOOP_COUNT) return;
+
+    if(gain < 0.003f){
+        // silent: stop the stream so it costs nothing (the caller fades the gain down first, so this is inaudible)
+        if(m_ambientPlaying[i] && m_ambientTrack[i]) MIX_StopTrack(m_ambientTrack[i],0);
+        m_ambientPlaying[i] = false;
+        m_ambientGain[i] = 0.0f;
+        return;
+    }
+    if(m_ambientFailed[i]) return;
+
+    if(!m_ambientAudio[i]){
+        SDL_IOStream* io = SDL_IOFromFile(AMBIENT_LOOP_FILES[i],"rb");
+        if(io) m_ambientAudio[i] = MIX_LoadAudio_IO(m_mixer,io,false,true);   // streamed: a 30 s loop stays compressed
+        if(!m_ambientAudio[i]){
+            LOGI("failed to load ambient loop:%s (%s)",AMBIENT_LOOP_FILES[i],SDL_GetError());
+            m_ambientFailed[i] = true;
+            return;
+        }
+    }
+    if(!m_ambientTrack[i]){
+        m_ambientTrack[i] = MIX_CreateTrack(m_mixer);
+        if(!m_ambientTrack[i]){
+            LOGI("MIX_CreateTrack failed:%s",SDL_GetError());
+            m_ambientFailed[i] = true;
+            return;
+        }
+    }
+
+    MIX_Track* track = m_ambientTrack[i];
+    const float target = gain * GameData::getInstance().getSFXAudioScale();
+    if(!m_ambientPlaying[i] || !MIX_TrackPlaying(track)){
+        MIX_SetTrackAudio(track,m_ambientAudio[i]);
+        MIX_SetTrack3DPosition(track,nullptr);
+        MIX_SetTrackLoops(track,-1);
+        MIX_SetTrackGain(track,target);
+        m_ambientPlaying[i] = MIX_PlayTrack(track,0);
+        m_ambientGain[i] = target;
+        return;
+    }
+    if(std::fabs(target - m_ambientGain[i]) > 0.002f){   // also follows the SFX slider while the bed is playing
+        MIX_SetTrackGain(track,target);
+        m_ambientGain[i] = target;
+    }
+}
+
+void AssetManager::stopAmbientLoops() {
+    for(int i = 0; i < AMBIENT_LOOP_COUNT; ++i){
+        if(m_ambientPlaying[i] && m_ambientTrack[i]) MIX_StopTrack(m_ambientTrack[i],0);
+        m_ambientPlaying[i] = false;
+        m_ambientGain[i] = 0.0f;
+    }
+}
+
+void AssetManager::setFootstepSound(SoundType type) {
+    switch(type){
+        case SoundType::SFX_FOOTSTEPS:
+        case SoundType::SFX_FOOTSTEP_GRASS:
+        case SoundType::SFX_FOOTSTEP_LEAVES:
+        case SoundType::SFX_FOOTSTEP_SNOW:
+            break;
+        default:
+            type = SoundType::SFX_FOOTSTEPS;
+    }
+    if(!m_soundTable[(unsigned int)type]) type = SoundType::SFX_FOOTSTEPS;   // file missing -> concrete
+    m_footstepSound = type;
+}
+
 void AssetManager::setPitchRatio(float ratio) {
     if(!m_mixer) return;
     if(ratio < 0.25f) ratio = 0.25f;
@@ -198,39 +274,42 @@ void AssetManager::playMusicAt(float listenerX, float listenerY, float srcX, flo
 }
 
 namespace {
-    constexpr const char* MENU_MUSIC_PATH = "Sound/Ambient/Ambient 2.ogg";
+    constexpr const char* MENU_MUSIC_PATH = "Sound/Ambient_Music/Ambient 2.ogg";
 }
 
 void AssetManager::playMusicFile(const std::string& path,float baseGain) {
     if(!m_mixer) return;
     if(path.empty()){ stopMusic(); return; }
+    if(!tryPlayMusicFile(path,baseGain)) stopMusic();   // missing file = silence (level / menu music)
+}
+
+bool AssetManager::tryPlayMusicFile(const std::string& path,float baseGain) {
+    if(!m_mixer || path.empty()) return false;
 
     // same file already playing: leave it alone (only refresh the trim in case it changed)
     if(m_musicFileAudio && path == m_musicFilePath && m_musicTrack && MIX_TrackPlaying(m_musicTrack)){
         m_musicBaseGain = baseGain;
         MIX_SetTrackGain(m_musicTrack,GameData::getInstance().getMusicAudioScale() * m_musicBaseGain);
-        return;
+        return true;
     }
 
     SDL_IOStream* io = SDL_IOFromFile(path.c_str(),"rb");
     if(!io){
         LOGI("no music file:%s (%s)",path.c_str(),SDL_GetError());
-        stopMusic();
-        return;
+        return false;
     }
     // predecode=false: stream it, music is big. closeio=true: SDL_mixer closes the stream with the audio.
     MIX_Audio* audio = MIX_LoadAudio_IO(m_mixer,io,false,true);
     if(!audio){
         LOGI("failed to load music:%s (%s)",path.c_str(),SDL_GetError());
-        stopMusic();
-        return;
+        return false;
     }
     if(!m_musicTrack){
         m_musicTrack = MIX_CreateTrack(m_mixer);
         if(!m_musicTrack){
             LOGI("MIX_CreateTrack failed:%s",SDL_GetError());
             MIX_DestroyAudio(audio);
-            return;
+            return false;
         }
     }
     MIX_StopTrack(m_musicTrack,0);
@@ -243,6 +322,14 @@ void AssetManager::playMusicFile(const std::string& path,float baseGain) {
     MIX_SetTrackGain(m_musicTrack,GameData::getInstance().getMusicAudioScale() * m_musicBaseGain);
     MIX_SetTrackLoops(m_musicTrack,-1);
     MIX_PlayTrack(m_musicTrack,0);
+    return true;
+}
+
+void AssetManager::fadeOutMusic(unsigned int ms) {
+    if(!m_musicTrack) return;
+    if(ms == 0){ stopMusic(); return; }
+    MIX_StopTrack(m_musicTrack,MIX_TrackMSToFrames(m_musicTrack,(Sint64)ms));
+    m_musicFilePath.clear();   // so the same file can be started again from the top once it has faded
 }
 
 void AssetManager::playMenuMusic() {
@@ -269,6 +356,10 @@ AssetManager::~AssetManager()
         audio = nullptr;
     }
     if(m_musicFileAudio){ MIX_DestroyAudio(m_musicFileAudio); m_musicFileAudio = nullptr; }
+    for(auto& audio:m_ambientAudio){
+        if(audio) MIX_DestroyAudio(audio);
+        audio = nullptr;
+    }
 
 }
 
@@ -402,9 +493,14 @@ void AssetManager::init(SDL_Renderer *renderer,MIX_Mixer* mixer) {
     loadSound(SoundType::SFX_UI_QUIT,   "Sound/UI/ui_quit.wav");
     loadSound(SoundType::SFX_UI_INTRO,  "Sound/UI/ui_intro.wav");
 
+    // surfaces + environment one-shots (Sound/footstep, Sound/Ambient_Environment/oneshot)
+    loadSound(SoundType::SFX_FOOTSTEP_GRASS,  "Sound/footstep/footsteps_grass_01.wav");
+    loadSound(SoundType::SFX_FOOTSTEP_LEAVES, "Sound/footstep/footsteps_leaves_01.wav");
+    loadSound(SoundType::SFX_FOOTSTEP_SNOW,   "Sound/footstep/footsteps_snow_01.wav");
+    loadSound(SoundType::SFX_THUNDER,      "Sound/Ambient_Environment/oneshot/thunder_close_01.wav");
+    loadSound(SoundType::SFX_WIND_GUST,    "Sound/Ambient_Environment/oneshot/wind_gust_01.wav");
+
     for(const auto & texture: m_textureTable){
         SDL_SetTextureScaleMode(texture,SDL_SCALEMODE_NEAREST);
     }
 }
-
-

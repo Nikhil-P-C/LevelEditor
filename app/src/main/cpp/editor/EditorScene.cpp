@@ -38,7 +38,8 @@ void EditorScene::rebuild(const LevelModel& model, int levelNumber, bool paralla
 
     // model object -> real sprite rectangle for traps and enemies (same order as the file)
     m_bounds.clear();
-    size_t trapIdx = 0, enemyIdx = 0;
+    size_t trapIdx = 0, enemyIdx = 0, bossIdx = 0;
+    const std::vector<Boss>& bosses = loader.getBosses();       // same order as the K lines of the file
     const auto& traps = m_trapBuilder.getTraps();
     const auto& enemies = m_enemyBuilder.getEnemies();
     for (const auto& o : model.objs) {
@@ -52,6 +53,9 @@ void EditorScene::rebuild(const LevelModel& model, int levelNumber, bool paralla
                     std::swap(bw, bh);
                 m_bounds[o.id] = {t.x, t.y, bw, bh};
             }
+        } else if (o.kind == Kind::BOSS && bossIdx < bosses.size()) {
+            const Boss& b = bosses[bossIdx++];                  // real hitbox of this boss type
+            m_bounds[o.id] = {b.x, b.y, b.w, b.h};
         } else if (o.kind == Kind::ENEMY && enemyIdx < enemies.size()) {
             const Enemy& e = enemies[enemyIdx++];
             SDL_FRect hit{e.x, e.y, e.w, e.h};

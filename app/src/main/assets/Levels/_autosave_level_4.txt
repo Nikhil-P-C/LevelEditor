@@ -1,0 +1,20 @@
+#Level: 4
+
+# spawn
+S 224.00 -160.00
+
+# walls
+W 0.00 -768.00 3200.00 768.00 STONE_BRICK_WALL SOLID
+W 0.00 0.00 3200.00 768.00 MOSS_WALL SOLID
+
+# world bounds (wall collision rect)
+R 0.00 -768.00 3200.00 1536.00
+
+# grounds
+G 64.00 0.00 128.00 32.00 GREEN_GRASS_GROUND SOLID
+
+# blocks
+B 64.00 -432.00 336.00 80.00 HORIZONTAL CLAY
+
+# checkpoint
+C 80.00 -688.00 256.00 256.00 NO_FLAG

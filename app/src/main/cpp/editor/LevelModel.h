@@ -28,6 +28,8 @@ enum class Kind {
     LIGHT,          // L
     BACKGROUND,     // X
     FOREGROUND,     // Y
+    BOSS,           // K  (boss fight, see level/Bosses.h)
+    ARENA,          // A  (boss arena rectangle the camera / player are locked to)
     COUNT
 };
 
@@ -79,6 +81,46 @@ struct Music {
     float gain = 1.0f;           // 0..2, 1 = untouched
 };
 
+// ---- weather / ambience / sun: the `Z` record, edited through fields (the Z line is generated, never typed) ----
+enum WxParam {
+    // flags: biome default / on with a strength / off
+    WX_RAIN, WX_SNOW, WX_THUNDER, WX_WIND, WX_FIREFLIES, WX_LEAVES, WX_PETALS, WX_SUNFLARE,
+    // plain numbers: biome default / set
+    WX_SNOWSIZE, WX_GUST, WX_ANGLE, WX_FOG, WX_DENSITY, WX_SOUND, WX_SUNSIZE, WX_SUNDRIFT,
+    // colours r,g,b (0..255)
+    WX_GLOW, WX_SUNCOLOR,
+    WX_COUNT
+};
+struct WxParamInfo {
+    const char* key;        // token / key in the Z line
+    const char* label;
+    int count;              // numbers it holds (1, or 3 for a colour)
+    bool flag;              // can be switched off / has an on state
+    float def, lo, hi;      // default when switched on, allowed range
+};
+const WxParamInfo& wxInfo(int p);
+struct WxValue {
+    int mode = 0;           // 0 = biome decides (nothing written), 1 = set / on, 2 = off (flags only)
+    float v[3] = {0, 0, 0};
+};
+struct Weather {
+    bool has = false;       // write a Z line at all
+    bool autoBase = true;   // AUTO: keep the biome's own ambience and only change what is set below
+    WxValue p[WX_COUNT];
+    int sunMode = 0;        // 0 biome decides, 1 preset, 2 fixed position, 3 moving path
+    std::string sunPreset = "SUNSET";
+    float sunPos[2] = {0.5f, 0.1f};
+    float sunPath[4] = {0.92f, 0.17f, 0.30f, 0.08f};
+    std::string steps;      // footstep surface, "" = automatic
+    std::string unknown;    // tokens this editor does not know (kept as written so nothing is lost)
+};
+const std::vector<std::string>& wxSunPresets();
+const std::vector<std::string>& wxStepSurfaces();
+void weatherPreset(Weather& w, const std::string& name);       // fills the fields: Clear Rain Storm Snow Blizzard Sunset Noon
+const std::vector<std::string>& weatherPresetNames();
+std::string weatherToLine(const Weather& w);                   // "AUTO RAIN=1.5 SUNPRESET=SUNSET ..."  (no leading Z)
+void weatherFromTokens(Weather& w, const std::string& tokens); // merges one Z line into w
+
 // traps that can face a direction (same list as the game's trapSupportsOrientation())
 bool trapCanRotate(const std::string& trapType);
 // next facing clockwise: UP -> RIGHT -> DOWN -> LEFT -> UP
@@ -89,6 +131,7 @@ public:
     std::vector<Obj> objs;
     Ambient ambient;
     Music music;
+    Weather weather;
     std::vector<std::string> extraLines;   // records we do not know: kept and written back untouched
     int nextId = 1;
 

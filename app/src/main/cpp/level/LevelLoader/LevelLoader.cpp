@@ -2,6 +2,7 @@
 // Created by LENOVO on 06-08-2026.
 //
 #include <algorithm>
+#include <cctype>
 #include "LevelLoader.h"
 #include "LevelTypeConverter.h"
 
@@ -51,6 +52,12 @@ void LevelLoader::parseLine(const std::string& line) {
         case 'I':
             parseInteractable(stream);
             break;
+        case 'K':
+            parseBoss(stream);
+            break;
+        case 'A':
+            parseBossArena(stream);
+            break;
         case '#':
             break;   // comment line
         case 'C':
@@ -70,6 +77,9 @@ void LevelLoader::parseLine(const std::string& line) {
             break;
         case 'L':
             parseLight(stream);
+            break;
+        case 'Z':
+            parseWeather(stream);
             break;
         case 'M':
             parseMusic(stream);
@@ -437,6 +447,15 @@ void LevelLoader::parseAmbient(std::istringstream& ss) {
     }
 }
 
+// Z TOKEN [TOKEN ...]   ambience/weather, e.g. "Z SNOW WIND", "Z AUTO RAIN", "Z STORM", "Z NONE"
+void LevelLoader::parseWeather(std::istringstream& ss) {
+    std::string tok;
+    while(ss >> tok){
+        for(auto& c : tok) c = (char)std::toupper((unsigned char)c);
+        m_weatherTokens.push_back(tok);
+    }
+}
+
 void LevelLoader::parseLight(std::istringstream& ss) {
     LightSource l;
     int r=255,g=200,b=120;
@@ -455,24 +474,6 @@ void LevelLoader::parseLight(std::istringstream& ss) {
         if(ss>>visible) l.visible = visible != 0;
     }
     m_lights.push_back(l);
-}
-
-std::string LevelLoader::s_overrideContent;
-bool LevelLoader::s_hasOverride = false;
-int LevelLoader::s_overrideLevel = -1;
-
-void LevelLoader::setOverrideContent(const std::string& content, int levelNumber){
-    s_overrideContent = content;
-    s_hasOverride = true;
-    s_overrideLevel = levelNumber;
-}
-void LevelLoader::clearOverrideContent(){
-    s_overrideContent.clear();
-    s_hasOverride = false;
-    s_overrideLevel = -1;
-}
-bool LevelLoader::hasOverrideContent(){
-    return s_hasOverride;
 }
 
 // M file [gain]
@@ -499,6 +500,24 @@ void LevelLoader::parseMusic(std::istringstream& ss) {
     m_musicExplicit = true;
 }
 
+std::string LevelLoader::s_overrideContent;
+bool LevelLoader::s_hasOverride = false;
+int LevelLoader::s_overrideLevel = -1;
+
+void LevelLoader::setOverrideContent(const std::string& content, int levelNumber){
+    s_overrideContent = content;
+    s_hasOverride = true;
+    s_overrideLevel = levelNumber;
+}
+void LevelLoader::clearOverrideContent(){
+    s_overrideContent.clear();
+    s_hasOverride = false;
+    s_overrideLevel = -1;
+}
+bool LevelLoader::hasOverrideContent(){
+    return s_hasOverride;
+}
+
 void LevelLoader::resetParsedState() {
     m_musicPath.clear();
     m_musicGain = 1.0f;
@@ -506,7 +525,10 @@ void LevelLoader::resetParsedState() {
     m_lights.clear();
     m_enemies.clear();
     m_interactables.clear();
+    m_bosses.clear();
+    m_hasBossArena = false;
     m_ambient = LevelAmbient{};
+    m_weatherTokens.clear();
     m_hasSpawn = false;
 }
 
@@ -517,6 +539,9 @@ void LevelLoader::parseContent(const std::string& content) {
     while(std::getline(stream,line)){
         parseLine(line);
     }
+    // the level's 'A' arena (if any) belongs to every boss in the level
+    if(m_hasBossArena)
+        for(Boss& b : m_bosses){ b.hasArena = true; b.arena = m_bossArena; }
 }
 
 void LevelLoader::loadLevelFromString(const std::string& content) {
@@ -533,6 +558,61 @@ void LevelLoader::loadLevel(int level) {
     // an editor playtest names the file after the level being edited, not after the placeholder level 0
     const int musicLevel = (s_hasOverride && s_overrideLevel >= 0) ? s_overrideLevel : level;
     if(!m_musicExplicit) m_musicPath = "Sound/Music/level_" + std::to_string(musicLevel) + ".ogg";
+}
+
+// K x y BOSS_TYPE [phase1Music [phase2Music [phase3Music] [gain]]]  (phase 3 only exists for the Preacher)
+//   a boss. x y = top-left of its hitbox (it falls onto the floor). The fight starts when the player walks
+//   into the level's arena (see 'A'); the arena then locks (camera fixed, player can't leave) until the boss dies.
+//   Music for the fight: phase 1 / phase 2 track. A bare file name means Sound/Music/Boss/<name>; '-' = use
+//   the default Sound/Music/Boss/<biome>_<mini|main>_phase<1|2>.ogg. gain trims both tracks (default: per boss).
+//   The level's own M record (or level_<n>.ogg) is the music BEFORE the fight and after the boss dies.
+//   example:  K 3400 400 MOSS_BROODMOTHER
+//   example:  K 3400 400 PEAK_REX_EMPEROR rex_p1.ogg rex_p2.ogg 0.9
+void LevelLoader::parseBoss(std::istringstream& ss) {
+    float x = 0.0f, y = 0.0f;
+    std::string typeStr;
+    ss >> x >> y >> typeStr;
+    if(ss.fail()){ LOGE("Malformed boss (K) line"); return; }
+    const BossType type = bossTypeFromName(typeStr);
+    if(type == BossType::NONE){ LOGE("Unknown boss type: %s", typeStr.c_str()); return; }
+
+    Boss boss(x, y, type);
+    auto readTrack = [&](std::string& out){
+        std::string f;
+        if(!(ss >> f)) return false;
+        if(f == "-") return true;                                        // keep the default
+        if(f.find('/') == std::string::npos) f = "Sound/Music/Boss/" + f;
+        out = f;
+        return true;
+    };
+    if(readTrack(boss.musicPhase1) && readTrack(boss.musicPhase2)){
+        std::string tok;
+        if(ss >> tok){
+            char* end = nullptr;
+            const float g = std::strtof(tok.c_str(), &end);
+            if(end && *end == '\0'){ boss.musicGain = std::clamp(g, 0.0f, 2.0f); }      // K ... p1 p2 gain
+            else {                                                                         // K ... p1 p2 p3 [gain]
+                if(tok != "-"){ if(tok.find('/') == std::string::npos) tok = "Sound/Music/Boss/" + tok; boss.musicPhase3 = tok; }
+                float gain = 1.0f;
+                if(ss >> gain) boss.musicGain = std::clamp(gain, 0.0f, 2.0f);
+            }
+        }
+    }
+    m_bosses.push_back(boss);
+}
+
+// A x y w h
+//   the boss arena: the world rectangle the player is locked into during the fight. While it is locked the camera
+//   stops following the player and sits centred on this rectangle, so it must fit on one screen
+//   (<= 1600 x 720; wider than that is trimmed). Put it at the end of the level so the camera's normal clamp and
+//   the lock agree, e.g. a 4000 px wide level -> A 2400 0 1600 704.
+//   Without an 'A' record the arena is one screen wide, centred on the boss.
+void LevelLoader::parseBossArena(std::istringstream& ss) {
+    float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+    ss >> x >> y >> w >> h;
+    if(ss.fail() || w <= 0.0f || h <= 0.0f){ LOGE("Malformed arena (A) line"); return; }
+    m_bossArena = {x, y, w, h};
+    m_hasBossArena = true;
 }
 
 LevelLoader::LevelLoader() {

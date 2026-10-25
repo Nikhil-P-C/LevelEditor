@@ -107,6 +107,7 @@ private:
     void applyHandle(Obj& o, const Handle& h, float wx, float wy) const;
     int  resizeHandleAt(const SDL_FRect& screenRect, float mx, float my) const;
     void placeBrush(float wx, float wy, float wx2, float wy2, bool dragged);
+    void placeBoss(float wx, float wy);          // boss + the arena, platforms, world bounds and exit it needs
     Obj brushObject(Kind kind, const std::string& preset, float wx, float wy, float wx2, float wy2, bool dragged) const;
     Obj* single();
 
@@ -134,6 +135,7 @@ private:
     void drawGhost();
     void drawObjectFields(Obj& o, float x, float& y, float w);
     void drawLevelSettings(float x, float& y, float w);
+    void drawWeatherFields(float x, float& y, float w);
 
     // ---- playtest ------------------------------------------------------------------------------
     void startPlaytest(bool atCursor);

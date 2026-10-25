@@ -34,7 +34,9 @@ GameState::GameState(SDL_Renderer *renderer,int level) {
 
     //init player attributes
     m_player.setSize(SPRITE_WIDTH*P_scale-80.00f,SPRITE_HEIGHT*P_scale-35.00f);
-    m_player.setPosition(200.00f,400.00f,P_scale);
+    // start at the level's 'S' spawn (setLevel() already stored it in m_respawnX/Y); levels without one keep the old default
+    if(m_levelLoader.hasSpawn()) m_player.setPosition(m_respawnX, m_respawnY, P_scale);
+    else                         m_player.setPosition(200.00f,400.00f,P_scale);
 
     m_player.setSpriteOffset(-40.00f,-20.00f);
     m_player.setSpriteSize(SPRITE_WIDTH*P_scale,SPRITE_HEIGHT*P_scale);
@@ -86,6 +88,7 @@ void GameState::render(SDL_Renderer* renderer)  {
 
     m_backgroundBuilder.render(m_renderer);
     m_ambientParticles.renderBack(m_renderer);
+    m_ambience.renderBack(m_renderer);
 
     for(const auto& tile : m_wallTiles)
     {
@@ -182,24 +185,28 @@ void GameState::render(SDL_Renderer* renderer)  {
         }
 
     }
-    SDL_FRect checkPointDst{m_checkPoint.x-camX,m_checkPoint.y-camY,m_checkPoint.w,m_checkPoint.h};
-    if(m_checkPoint.aniType == CheckPointAni::NO_FLAG)
-    {
-        SDL_FRect checkPointSrc{0.00f,0.00f,64.00f,64.00f};
-        SDL_RenderTexture(renderer,Engine::Get().getAssetManager().getTexture(TextureType::CHECKPOINT_FLAG_NO),
-                          &checkPointSrc,&checkPointDst);
-    }
-    if(m_checkPoint.aniType == CheckPointAni::FLAG_OUT)
-    {
-        SDL_FRect checkPointSrc{0.00f+64.00f*m_checkPoint.currentFrame,0.00f,64.00f,64.00f};
-        SDL_RenderTexture(renderer,Engine::Get().getAssetManager().getTexture(TextureType::CHECKPOINT_FLAG_OUT),
-                          &checkPointSrc,&checkPointDst);
-    }
-    if(m_checkPoint.aniType == CheckPointAni::FLAG_IDLE)
-    {
-        SDL_FRect checkPointSrc{0.00f+64.00f*m_checkPoint.currentFrame,0.00f,64.00f,64.00f};
-        SDL_RenderTexture(renderer,Engine::Get().getAssetManager().getTexture(TextureType::CHECKPOINT_FLAG_IDLE),
-                          &checkPointSrc,&checkPointDst);
+    // boss levels: the exit flag only exists once the boss is dead
+    if(!m_bossBuilder.hasLivingBoss()){
+        SDL_FRect checkPointDst{m_checkPoint.x-camX,m_checkPoint.y-camY,m_checkPoint.w,m_checkPoint.h};
+        if(m_checkPoint.aniType == CheckPointAni::NO_FLAG)
+        {
+            SDL_FRect checkPointSrc{0.00f,0.00f,64.00f,64.00f};
+            SDL_RenderTexture(renderer,Engine::Get().getAssetManager().getTexture(TextureType::CHECKPOINT_FLAG_NO),
+                              &checkPointSrc,&checkPointDst);
+        }
+        if(m_checkPoint.aniType == CheckPointAni::FLAG_OUT)
+        {
+            SDL_FRect checkPointSrc{0.00f+64.00f*m_checkPoint.currentFrame,0.00f,64.00f,64.00f};
+            SDL_RenderTexture(renderer,Engine::Get().getAssetManager().getTexture(TextureType::CHECKPOINT_FLAG_OUT),
+                              &checkPointSrc,&checkPointDst);
+        }
+        if(m_checkPoint.aniType == CheckPointAni::FLAG_IDLE)
+        {
+            SDL_FRect checkPointSrc{0.00f+64.00f*m_checkPoint.currentFrame,0.00f,64.00f,64.00f};
+            SDL_RenderTexture(renderer,Engine::Get().getAssetManager().getTexture(TextureType::CHECKPOINT_FLAG_IDLE),
+                              &checkPointSrc,&checkPointDst);
+        }
+
     }
 
     m_particleSystem.render(m_renderer);
@@ -225,6 +232,8 @@ void GameState::render(SDL_Renderer* renderer)  {
     }
     Engine::Get().getPostProcessor().endBloomGroup(m_renderer);
     m_enemyBuilder.render(m_renderer);
+    m_bossBuilder.render(m_renderer);
+    renderArenaGates(m_renderer);
     m_interactableBuilder.renderWorld(m_renderer);
 
     SDL_FRect dst = {m_player.x+m_player.spriteOffsetX-(float)camX,
@@ -364,15 +373,19 @@ void GameState::render(SDL_Renderer* renderer)  {
 
     m_foregroundBuilder.render(m_renderer);
     m_ambientParticles.renderFront(m_renderer);
+    m_ambience.renderFront(m_renderer);
     Engine::Get().getPostProcessor().endBloomGroup(m_renderer);
 
     // ambient darkness + player light + light objects, all described by the level file (D / L lines)
     m_lighting.render(m_renderer, (float)camX, (float)camY,
                       m_player.x + m_player.spriteOffsetX + m_player.spriteW * 0.5f - (float) camX,
                       m_player.y + m_player.spriteOffsetY + m_player.spriteH * 0.5f - (float) camY);
+    m_ambience.renderOverlay(m_renderer);   // lens flare, lightning flash, weather tint (after the darkness pass)
 
     renderComboCounter(renderer);   // after the light/vignette so it isn't darkened
     m_interactableBuilder.renderDialog(renderer);   // screen-space dialog box, on top of the world
+    m_bossBuilder.renderHud(renderer);              // boss health bar (screen space)
+    renderBossName(renderer);
 
     updateHurtAudio();              // wall-clock based: the audio also recovers while the pause menu is up
     if(m_hurtVignette > 0.0f){
@@ -407,6 +420,52 @@ void GameState::render(SDL_Renderer* renderer)  {
     }
 }
 
+// Footstep surface of the level (Z ... STEPS=, else snow / rain / leaves / grass / concrete from the weather + biome)
+static SoundType footstepSoundFor(StepSurface surface){
+    switch(surface){
+        case StepSurface::GRASS:  return SoundType::SFX_FOOTSTEP_GRASS;
+        case StepSurface::LEAVES: return SoundType::SFX_FOOTSTEP_LEAVES;
+        case StepSurface::SNOW:   return SoundType::SFX_FOOTSTEP_SNOW;
+        default:                  return SoundType::SFX_FOOTSTEPS;
+    }
+}
+
+// How loud each environment sound is before the SFX slider (tune them here)
+static constexpr float AMB_GAIN_RAIN      = 0.55f;
+static constexpr float AMB_GAIN_WIND      = 0.60f;
+static constexpr float AMB_GAIN_THUNDER   = 0.90f;
+static constexpr float AMB_GAIN_GUST      = 0.70f;
+
+// ambience simulation + everything the environment sounds like:
+//   loops   rain (rain_light_loop) and wind follow the weather
+//   shots   thunder on each lightning strike (panned to where the bolt was), a gust whoosh when a gust starts
+void GameState::updateAmbience(float dt){
+    m_ambience.update(dt);
+    AssetManager& assets = Engine::Get().getAssetManager();
+    const float scale = m_ambience.soundScale();
+
+    float strength = 0.0f, pan = 0.0f;
+    if(m_ambience.consumeThunder(strength, pan)){
+        Camera::getInstance().addTrauma(0.10f + 0.20f * strength);   // low rumble
+        assets.playSoundAt(0.0f, 0.0f, pan * 450.0f, -150.0f, SoundType::SFX_THUNDER, (0.55f + 0.45f * strength) * AMB_GAIN_THUNDER * scale);
+    }
+    float gustStrength = 0.0f, gustDir = 1.0f;
+    if(m_ambience.consumeGust(gustStrength, gustDir)){
+        assets.playSoundAt(0.0f, 0.0f, gustDir * 500.0f, 0.0f, SoundType::SFX_WIND_GUST, (0.35f + 0.65f * gustStrength) * AMB_GAIN_GUST * scale);
+    }
+
+    // glide every bed to its target (about half a second), so weather swells in and out instead of popping
+    const AmbienceFx::SoundLevels lv = m_ambience.soundLevels();
+    const float target[2] = { lv.rain * AMB_GAIN_RAIN, lv.wind * AMB_GAIN_WIND };
+    const float rate[2]   = { 1.6f, 2.2f };
+    const AmbientLoop loop[2] = { AmbientLoop::RAIN, AmbientLoop::WIND };
+    for(int i = 0; i < 2; ++i){
+        m_ambientGain[i] += (target[i] - m_ambientGain[i]) * std::min(1.0f, dt * rate[i]);
+        if(target[i] <= 0.0f && m_ambientGain[i] < 0.01f) m_ambientGain[i] = 0.0f;   // finish the fade-out, then the stream stops
+        assets.setAmbientLoop(loop[i], m_ambientGain[i]);
+    }
+}
+
 void GameState::update(float dt){
 
     if(PlayerDetail::getInstance().getPlayerHP() <= 0 && !m_isDead){
@@ -423,6 +482,7 @@ void GameState::update(float dt){
         const unsigned int frozenMs = (unsigned int)(dt * 1000.0f + 0.5f);
         m_aniLastTime = SDL_GetTicks();                 // pauses the player/slash frame animation
         m_enemyBuilder.shiftTimers(frozenMs);
+        m_bossBuilder.shiftTimers(frozenMs);
         if(m_hurtAnimEndTime)  m_hurtAnimEndTime  += frozenMs;
         if(m_knockbackEndTime) m_knockbackEndTime += frozenMs;
         m_fxParticles.update(dt);
@@ -449,6 +509,7 @@ void GameState::update(float dt){
         if(ms > 0){
             m_aniLastTime = std::min<uint32_t>(m_aniLastTime + ms, SDL_GetTicks());
             m_enemyBuilder.shiftTimers(ms);
+            m_bossBuilder.shiftTimers(ms);
             if(m_hurtAnimEndTime)  m_hurtAnimEndTime  += ms;
             if(m_knockbackEndTime) m_knockbackEndTime += ms;
             if(m_recoilEndTime)    m_recoilEndTime    += ms;
@@ -575,6 +636,29 @@ void GameState::update(float dt){
     SDL_FRect playerRect{m_player.x,m_player.y,m_player.w,m_player.h};
     m_enemyBuilder.update(dt,playerRect,m_wallCollisionRect,m_grounds,m_platforms,m_blocks);
     flushEnemyDeathEffects();
+    {
+        BossPlayerInfo info;
+        info.slashStarted = (m_attackId != m_bossPrevAttackId);   // a new swing began (parry timing)
+        info.attacking = m_isAttacking;
+        info.grounded = m_isGrounded;
+        m_bossPrevAttackId = m_attackId;
+        m_bossBuilder.setPlayerInfo(info);
+    }
+    m_bossBuilder.update(dt,playerRect,m_wallCollisionRect,m_grounds,m_platforms,m_blocks);
+    flushBossEffects();
+    {   // held by a boss (rat bite / brontos head): the player is carried in its mouth until he breaks free
+        SDL_FPoint grab;
+        if(m_bossBuilder.isPlayerGrabbed(grab)){
+            m_player.x = grab.x; m_player.y = grab.y;
+            m_velocityX = 0.0f; m_velocityY = 0.0f;
+        }
+        // Ancient Sinner finisher: the player is pushed up and held in the air for the dash QTE
+        float liftV = 0.0f;
+        if(m_bossBuilder.getQteLift(SDL_FRect{m_player.x, m_player.y, m_player.w, m_player.h}, liftV)){
+            m_velocityY = liftV;
+            m_isGrounded = false;
+        }
+    }
 
     // player's weapons vs enemies: m_playerHitBox (melee) was just computed above,
     // m_beamHitBox (beam) was computed earlier this frame inside handlePhysicAndInput->tryBeam
@@ -588,13 +672,20 @@ void GameState::update(float dt){
     if(enemiesKilled > 0){
         PlayerDetail::getInstance().addScore(enemiesKilled * ENEMY_KILL_SCORE);
     }
+    const int bossesKilled = m_bossBuilder.applyPlayerDamage(m_playerHitBox, m_isAttacking,
+                                                             m_beamHitBox, m_isBeaming, dt, m_attackId, knockMul);
+    if(bossesKilled > 0){
+        PlayerDetail::getInstance().addScore(m_bossBuilder.consumeKillScore());
+    }
     flushEnemyHitEffects();
 
     // Downward slash on a hazard trap / rock head = pogo. (Enemies pogo from onEnemyHit; walls, ground, platforms,
     // blocks and every other trap never bounce the player.) One bounce per swing.
     if(m_isAttacking && m_slashDir == SlashDir::DOWN && m_pogoId != m_attackId){
         float hitX = 0.0f, hitY = 0.0f;
-        if(m_trapBuilder.checkPogoTarget(m_playerHitBox, hitX, hitY)){
+        // hazard trap / rock head, or (Preacher phase 3) a sinner child with broken wings: both are pogo targets
+        if(m_trapBuilder.checkPogoTarget(m_playerHitBox, hitX, hitY) ||
+           m_bossBuilder.checkGhostPogo(m_playerHitBox, hitX, hitY)){
             startPogo();
             m_enemyHitId = m_attackId;       // counts as a landed hit: no extra wall clink for this swing
             const float facing = m_isPlayerfacingRight ? -1.0f : 1.0f;
@@ -681,6 +772,9 @@ void GameState::update(float dt){
     gameMath::collisionSide enemySide = gameMath::collisionSide::NONE;
     bool enemyHit = m_enemyBuilder.checkAttackOnPlayer(m_player.x, m_player.y, m_player.w, m_player.h,
                                                        hitNow, canBeHit && !hazardColl, enemySide);
+    if(!enemyHit)       // bosses: their attack boxes, projectiles, rocks and ground waves
+        enemyHit = m_bossBuilder.checkAttackOnPlayer(m_player.x, m_player.y, m_player.w, m_player.h,
+                                                     hitNow, canBeHit && !hazardColl, enemySide);
     if(canBeHit){
         if(hazardColl)
         {
@@ -699,11 +793,8 @@ void GameState::update(float dt){
     PlayerDetail::getInstance().addScore(score);
 
 
-    //camera
-    Camera::getInstance().lockCameraOn(m_player.x,m_player.y,m_player.h,m_player.w);
-
-    SDL_FRect cameraBounds{m_wallCollisionRect.x,m_wallCollisionRect.y,m_wallCollisionRect.w,m_wallCollisionRect.h+TILE_SIZE*SCALE};
-    Camera::getInstance().cameraClamp(cameraBounds);
+    //camera + boss arena lock (normal follow camera when no fight is on)
+    updateBossArena(realDt);
     m_fxParticles.update(dt);            // scaled dt: sparks hang in the air during slow motion
     updateRealtimeFx(realDt);
     if(m_combo > 0 && SDL_GetTicks() - m_lastComboHit > COMBO_WINDOW_MS) m_combo = 0;
@@ -726,7 +817,9 @@ void GameState::update(float dt){
         m_jumpsUsed = 1;   // coyote window over: the first jump is gone, only the air jump is left
     }
 
-    if(gameMath::checkcollision(m_player.x,m_player.y,m_checkPoint.x,m_checkPoint.y,
+    // boss levels: the exit stays shut (and invisible) until every boss in the level is dead
+    if(!m_bossBuilder.hasLivingBoss() &&
+       gameMath::checkcollision(m_player.x,m_player.y,m_checkPoint.x,m_checkPoint.y,
                                 m_player.h,m_player.w,m_checkPoint.h,m_checkPoint.w)){
         triggerCheckpoint();
 
@@ -752,13 +845,14 @@ void GameState::update(float dt){
             return;
         }
 #endif
-        Engine::Get().pushOverlayState(std::make_unique<TransitionState>(m_renderer,m_level+1));
+        Engine::Get().pushOverlayState(std::make_unique<TransitionState>(m_renderer,nextLevelAfter(m_level)));
     }
 
     updateAnimation();
 
     m_particleSystem.update(dt);
     m_ambientParticles.update(dt);
+    updateAmbience(dt);
     m_fruitBuilder.update(dt);
     m_trapBuilder.update(dt);
 
@@ -852,7 +946,13 @@ void GameState::handleCollision() {
             float currentBottom = m_player.y + m_player.h;
             float platformTop = platform.y;
 
-            if (m_velocityY > 0 && previousBottom <= platformTop
+            // A dash pins m_velocityY to 0 and (from the ground) presses the player 1px into the platform each
+            // frame. endDash() also runs on the last dash frame, so on that frame the player is 1px below the top
+            // with velocityY == 0 and isDashing already false. Requiring velocityY > 0 therefore missed the catch,
+            // and on the next frame previousBottom was below the top -> the player fell through.
+            // Fix: catch whenever the player is NOT moving upward (>= 0), with a small tolerance for the 1px press.
+            constexpr float ONE_WAY_TOLERANCE = 2.0f;
+            if (m_velocityY >= 0.0f && previousBottom <= platformTop + ONE_WAY_TOLERANCE
                 && currentBottom >= platformTop
                 && gameMath::checkcollisionX(m_player.x, m_player.y, platform.x,
                                              platform.y,
@@ -1070,6 +1170,9 @@ void GameState::flushEnemyHitEffects() {
     for(const EnemyHitEvent& e : m_enemyBuilder.consumeHitEvents()){
         onEnemyHit(e);
     }
+    for(const EnemyHitEvent& e : m_bossBuilder.consumeHitEvents()){
+        onEnemyHit(e);
+    }
 }
 
 // One landed player hit. Melee hits build the combo and escalate sparks / shake / hit-stop with it;
@@ -1151,6 +1254,7 @@ void GameState::renderComboCounter(SDL_Renderer* renderer) {
 }
 
 void GameState::startPlayerDeath() {
+    m_deathPlayerRect = {m_player.x, m_player.y, m_player.w, m_player.h};
     Camera::getInstance().addTrauma(0.7f);
     m_slowMoLeft = 0.0f; m_timeScale = 1.0f;
     triggerHurtAudio(1.0f, 2400, false);
@@ -1212,9 +1316,13 @@ void GameState::updateDeath(float dt) {
     SDL_FRect farAway{-100000.0f, -100000.0f, m_player.w, m_player.h};
     m_enemyBuilder.update(dt, farAway, m_wallCollisionRect, m_grounds, m_platforms, m_blocks);
     flushEnemyDeathEffects();
+    m_bossBuilder.setPlayerInfo(BossPlayerInfo{false, false, true});
+    m_bossBuilder.update(dt, m_deathPlayerRect, m_wallCollisionRect, m_grounds, m_platforms, m_blocks);   // keeps targeting where the player fell
+    flushBossEffects();
 
     m_particleSystem.update(dt);
     m_ambientParticles.update(dt);
+    updateAmbience(dt);
     m_fruitBuilder.update(dt);
     m_trapBuilder.update(dt);
 
@@ -1269,6 +1377,7 @@ void GameState::respawnPlayer() {
     m_playerAction = PlayerAction::IDLE;
     m_hurtAnimEndTime = 0;
     m_knockbackEndTime = 0;
+    resetBossFight();
 }
 
 void GameState::handlePlayerHit(TrapType hazardType, gameMath::collisionSide side, unsigned int now,
@@ -1619,7 +1728,7 @@ void GameState::handlePhysicAndInput(float dt) {
     // every clip plays for its full length (no per-frame spam, no cut-offs).
     if((InputDispatcher::getInstance().movingLeft || InputDispatcher::getInstance().movingRight)
        && m_isGrounded && !inKnockback && !m_isDashing){
-        Engine::Get().getAssetManager().playSoundIfIdle(SoundType::SFX_FOOTSTEPS);
+        Engine::Get().getAssetManager().playSoundIfIdle(Engine::Get().getAssetManager().getFootstepSound());   // surface of this level
     }
 
     const bool jumpPressed = InputDispatcher::getInstance().consumeJumpPressed();
@@ -1799,6 +1908,7 @@ void GameState::setLevel(int level) {
     m_traps.clear();
     m_fruits.clear();
     m_enemies.clear();
+    m_bosses.clear();
     m_backgroundElements.clear();
     m_foregroundElements.clear();
 
@@ -1812,6 +1922,7 @@ void GameState::setLevel(int level) {
     m_fruits =m_levelLoader.getFruits();
     m_traps =m_levelLoader.getTraps();
     m_enemies =m_levelLoader.getEnemies();
+    m_bosses =m_levelLoader.getBosses();
     m_backgroundElements = m_levelLoader.getBackGroundElements();
     m_foregroundElements = m_levelLoader.getForeGroundElements();
     m_wallCollisionRect=m_levelLoader.getWallCollisionRect();
@@ -1820,6 +1931,8 @@ void GameState::setLevel(int level) {
     m_fruitBuilder.init(m_fruits);
     m_trapBuilder.init(m_traps);
     m_enemyBuilder.init(m_enemies);
+    m_bossBuilder.init(m_bosses);
+    m_bossWasAlive = m_bossBuilder.hasLivingBoss();
     m_interactableBuilder.init(m_levelLoader.getInteractables());
     GroundShapeBuilder builder;
     m_wallShape = builder.build(m_grounds,TILE_SIZE,(int)SCALE);
@@ -1828,6 +1941,14 @@ void GameState::setLevel(int level) {
     m_ambientParticles.init(m_renderer, AmbientParticles::themeFromBackground(m_backgroundElements));
     m_lighting.init(m_renderer);
     m_lighting.setLevel(m_levelLoader.getAmbient(), m_levelLoader.getLights());
+    {
+        const SDL_FRect world = m_levelLoader.getWallCollisionRect();   // the sun travels across the level's width
+        m_ambience.init(m_renderer, AmbienceFx::biomeFromBackground(m_backgroundElements),
+                        m_levelLoader.getAmbient().darkness, m_levelLoader.getWeatherTokens(), &world);
+    }
+    // what the ground sounds like on this level, and a clean start for the environment beds
+    Engine::Get().getAssetManager().setFootstepSound(footstepSoundFor(m_ambience.stepSurface()));
+    for(float& g : m_ambientGain) g = 0.0f;
     if(m_levelLoader.hasSpawn()){
         m_respawnX = m_levelLoader.getPlayer().x;
         m_respawnY = m_levelLoader.getPlayer().y;
@@ -1835,6 +1956,195 @@ void GameState::setLevel(int level) {
 
     buildWallTiles();
 
+}
+
+// ====================================================================================================
+//  boss arena
+// ====================================================================================================
+void GameState::updateBossArena(float realDt) {
+    Camera& cam = Camera::getInstance();
+    const SDL_FRect cameraBounds{m_wallCollisionRect.x, m_wallCollisionRect.y,
+                                 m_wallCollisionRect.w, m_wallCollisionRect.h + TILE_SIZE * SCALE};
+    SDL_FRect arena{0.0f,0.0f,0.0f,0.0f};
+    const bool lock = m_bossBuilder.isArenaLocked() && m_bossBuilder.getArena(arena);
+
+    SDL_FRect followBounds = cameraBounds;
+    if(!m_bossBuilder.isUpperActive() && !m_bosses.empty() && m_bosses[0].hasArena){
+        // the level may be much taller than the arena (Preacher: the upper arena): outside the fight the camera never
+        // shows the empty space above the first arena
+        // (arenas can be much taller than the screen): the approach camera keeps the bottom screen of the level
+        const float top = std::max(cameraBounds.y, cameraBounds.y + cameraBounds.h - cam.getCamera().h);
+        followBounds = { cameraBounds.x, top, cameraBounds.w, cameraBounds.y + cameraBounds.h - top };
+    }
+    if(!lock){
+        if(m_arenaLocked){ m_arenaLocked = false; cam.unlock(); }
+        m_arenaGate = std::max(0.0f, m_arenaGate - realDt * 2.0f);
+        cam.lockCameraOn(m_player.x, m_player.y, m_player.h, m_player.w);
+        cam.cameraClamp(m_bossBuilder.isUpperActive() ? cameraBounds : followBounds);
+        return;
+    }
+
+    if(!m_arenaLocked){
+        // the fight just began: the gate shuts behind the player.
+        m_arenaLocked = true;
+        m_arenaRect = arena;
+        m_arenaGate = 0.0f;
+        // dying in the fight respawns at the arena entrance (not back at the level start)
+        const float floorY = m_wallCollisionRect.y + std::ceil(m_wallCollisionRect.h / (TILE_SIZE * SCALE)) * (TILE_SIZE * SCALE) - TILE_SIZE * SCALE;
+        m_respawnX = arena.x + 100.0f;
+        m_respawnY = floorY - m_player.h - 4.0f;
+    }
+    m_arenaGate = std::min(1.0f, m_arenaGate + realDt * 2.5f);
+
+    // --- the player cannot leave the arena ---
+    const float wallT = TILE_SIZE * SCALE;
+    const float left  = std::max(arena.x, m_wallCollisionRect.x + wallT);
+    const float right = std::min(arena.x + arena.w, m_wallCollisionRect.x + m_wallCollisionRect.w - wallT);
+    if(m_player.x < left){
+        m_player.x = left;
+        if(m_velocityX < 0.0f) m_velocityX = 0.0f;
+        if(m_isDashing) endDash();
+    } else if(m_player.x + m_player.w > right){
+        m_player.x = right - m_player.w;
+        if(m_velocityX > 0.0f) m_velocityX = 0.0f;
+        if(m_isDashing) endDash();
+    }
+
+    m_arenaRect = arena;     // follows the arena when the Preacher fight moves up
+
+    // --- Preacher phase 3 climb: the camera follows the player up the ghost pads inside the tall column ---
+    SDL_FRect climb;
+    if(m_bossBuilder.getClimbBounds(climb)){
+        // same lock/glide mechanism as the arena camera, but the target follows the player UP the tall column
+        const float vw = cam.getCamera().w, vh = cam.getCamera().h;
+        float cx = std::clamp(climb.x + climb.w * 0.5f - vw * 0.5f, cameraBounds.x, std::max(cameraBounds.x, cameraBounds.x + cameraBounds.w - vw));
+        float cy = m_player.y + m_player.h * 0.5f - vh * 0.62f;      // player in the lower part: the next pad is visible above
+        cy = std::clamp(cy, climb.y, std::max(climb.y, climb.y + climb.h - vh));
+        // once the player is above the upper platform the camera must not show anything beneath it
+        const float upperFloor = m_bossBuilder.getUpperFloorY();
+        if(m_player.y + m_player.h <= upperFloor + 6.0f)
+            cy = std::min(cy, upperFloor + TILE_SIZE * SCALE - vh);
+        cam.lockTo(cx, cy);
+        cam.updateLock(realDt * 2.0f);
+        return;
+    }
+
+    // --- the camera stops following: it glides onto the arena and stays there ---
+    const float viewW = cam.getCamera().w, viewH = cam.getCamera().h;
+    float tx = arena.x + arena.w * 0.5f - viewW * 0.5f;
+    float ty = arena.y + arena.h * 0.5f - viewH * 0.5f;
+    if(arena.h > viewH + 1.0f)       // arena taller than the screen: the camera follows the player up and down inside it
+    {
+        ty = m_player.y + m_player.h * 0.5f - viewH * 0.55f;
+        ty = std::min(ty, arena.y + arena.h - viewH);            // never show anything below the arena's floor / platform
+    }
+    tx = std::clamp(tx, cameraBounds.x, std::max(cameraBounds.x, cameraBounds.x + cameraBounds.w - viewW));
+    ty = std::max(ty, arena.y);                                  // never show the empty space above the arena
+    ty = std::clamp(ty, cameraBounds.y, std::max(cameraBounds.y, cameraBounds.y + cameraBounds.h - viewH));
+    cam.lockTo(tx, ty);
+    cam.updateLock(realDt);
+}
+
+void GameState::debugJumpToLevel(int level) {
+    if(!GameData::getInstance().isDebugEnabled()) return;      // debug builds / debug option only
+    if(GameData::getInstance().isPlaytest()) return;           // editor playtest: there is no next level to jump to
+    if(m_levelTransitioning) return;
+    m_levelTransitioning = true;
+    Engine::Get().popOverlayState();          // input overlay
+    Engine::Get().popOverlayState();          // HUD
+    Engine::Get().popOverlayState();          // DebugState (we are only called while it exists)
+    InputDispatcher::getInstance().inputLogClear();
+    Engine::Get().pushOverlayState(std::make_unique<TransitionState>(m_renderer, std::clamp(level, 0, LAST_LEVEL)));
+}
+
+void GameState::resetBossFight() {
+    if(m_bosses.empty()) return;
+    const bool wasActive = m_bossBuilder.resetFight();
+    if(wasActive) m_enemyBuilder.init(m_enemies);       // minions the boss called vanish with the fight
+    if(m_arenaLocked){ m_arenaLocked = false; Camera::getInstance().unlock(); }
+    m_arenaGate = 0.0f;
+}
+
+void GameState::flushBossEffects() {
+    for(const BossParryEvent& e : m_bossBuilder.consumeParryEvents()){
+        m_particleSystem.emitBurst(e.x, e.y, e.big ? 36 : 22, 160.0f, 560.0f, 0.25f, 0.55f, 26.0f, 255, 255, 255);
+        requestHitStop(e.big ? 0.14f : 0.09f);
+    }
+    for(const SDL_FPoint& p : m_bossBuilder.consumeDeathEvents())
+        m_particleSystem.emitBurst(p.x, p.y, 40, 160.0f, 520.0f, 0.5f, 1.0f, 70.0f, 255, 240, 200);
+
+    for(const BossSummonRequest& s : m_bossBuilder.consumeSummons()){
+        const EnemyAIConfig* cfg = getEnemyAIConfig(s.type);
+        const AttackType atk = cfg ? cfg->attacks[0] : AttackType::NONE;
+        m_enemyBuilder.spawn(Enemy(s.x, s.y, s.type, EnemyAction::SEEK, atk,
+                                   s.x - 300.0f, s.x + 300.0f, 150.0f,
+                                   PathAxis::HORIZONTAL, PathShape::LINE, 0.0f, s.combat));
+    }
+
+    // a few seconds after the kill (or right after the player died mid-fight): the level's own music returns
+    if(m_bossBuilder.consumeRestoreLevelMusic())
+        Engine::Get().getAssetManager().playMusicFile(m_levelLoader.getMusicPath(), m_levelLoader.getMusicGain());
+
+    // last boss down: the exit flag appears with a burst
+    const bool alive = m_bossBuilder.hasLivingBoss();
+    if(m_bossWasAlive && !alive)
+        m_particleSystem.emitBurst(m_checkPoint.x + m_checkPoint.w * 0.5f, m_checkPoint.y + m_checkPoint.h * 0.6f,
+                                   30, 120.0f, 380.0f, 0.5f, 1.0f, 50.0f, 255, 230, 150);
+    m_bossWasAlive = alive;
+}
+
+// Two glowing energy walls on the arena's left and right edges while the fight is on (they fade in as the gate shuts).
+void GameState::renderArenaGates(SDL_Renderer* renderer) {
+    if(m_arenaGate <= 0.0f) return;
+    const int camX = (int)std::round(Camera::getInstance().getCamera().x);
+    const int camY = (int)std::round(Camera::getInstance().getCamera().y);
+    const float pulse = 0.78f + 0.22f * std::sin(SDL_GetTicks() * 0.006f);
+    const float a = m_arenaGate * pulse;
+    const float top = m_arenaRect.y - (float)camY, h = m_arenaRect.h;
+    const float glow = 110.0f;
+
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    for(int side = 0; side < 2; ++side){
+        const float edgeX = (side == 0 ? m_arenaRect.x : m_arenaRect.x + m_arenaRect.w) - (float)camX;
+        const float dir = side == 0 ? 1.0f : -1.0f;                 // glow spreads into the arena
+        const SDL_FColor strong{1.0f, 0.30f, 0.22f, 0.55f * a}, clear{1.0f, 0.30f, 0.22f, 0.0f};
+        SDL_Vertex v[4] = {
+                {{edgeX, top},                  strong, {0,0}},
+                {{edgeX + dir * glow, top},     clear,  {0,0}},
+                {{edgeX + dir * glow, top + h}, clear,  {0,0}},
+                {{edgeX, top + h},              strong, {0,0}},
+        };
+        const int idx[6] = {0, 1, 2, 0, 2, 3};
+        SDL_RenderGeometry(renderer, nullptr, v, 4, idx, 6);
+        SDL_SetRenderDrawColor(renderer, 255, 120, 90, (Uint8)(235.0f * a));
+        SDL_FRect line{side == 0 ? edgeX : edgeX - 6.0f, top, 6.0f, h};
+        SDL_RenderFillRect(renderer, &line);
+    }
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+}
+
+void GameState::renderBossName(SDL_Renderer* renderer) {
+    const BossHudInfo info = m_bossBuilder.getHudInfo();
+    if(!info.active || !m_font) return;
+    if(m_bossNameKey != info.name){                      // names are static strings: rebuild only when the boss changes
+        if(m_bossNameTexture){ SDL_DestroyTexture(m_bossNameTexture); m_bossNameTexture = nullptr; }
+        SDL_Surface* surf = TTF_RenderText_Blended(m_font, info.name, SDL_strlen(info.name), SDL_Color{255, 240, 220, 255});
+        if(surf){
+            m_bossNameTexture = SDL_CreateTextureFromSurface(renderer, surf);
+            m_bossNameW = (float)surf->w; m_bossNameH = (float)surf->h;
+            SDL_DestroySurface(surf);
+        }
+        m_bossNameKey = info.name;
+    }
+    if(!m_bossNameTexture) return;
+    const float scale = 0.75f;
+    const float W = Camera::getInstance().getCamera().w;
+    SDL_FRect dst{(W - m_bossNameW * scale) * 0.5f, 54.0f, m_bossNameW * scale, m_bossNameH * scale};
+    SDL_FRect shadow{dst.x + 2.0f, dst.y + 2.0f, dst.w, dst.h};
+    SDL_SetTextureColorMod(m_bossNameTexture, 0, 0, 0);
+    SDL_RenderTexture(renderer, m_bossNameTexture, nullptr, &shadow);
+    SDL_SetTextureColorMod(m_bossNameTexture, 255, 255, 255);
+    SDL_RenderTexture(renderer, m_bossNameTexture, nullptr, &dst);
 }
 
 void GameState::buildWallTiles() {

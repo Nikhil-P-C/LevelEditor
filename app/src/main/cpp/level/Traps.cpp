@@ -311,7 +311,9 @@ gameMath::collisionSide TrapBuilder::resolveTrapCollision(int trapIndex,float &p
         float sweptTopMin = (platformTopPrev < platformTop) ? platformTopPrev : platformTop;
         float sweptTopMax = (platformTopPrev > platformTop) ? platformTopPrev : platformTop;
 
-        if (velocityY > 0 && previousBottom <= sweptTopMax
+        // >= 0 (not > 0): a dash pins velocityY to 0, so '> 0' let the player sink through moving platforms.
+        // +2px tolerance covers the 1px floor-press a grounded dash applies each frame.
+        if (velocityY >= 0.0f && previousBottom <= sweptTopMax + 2.0f
             && currentBottom >= sweptTopMin
             && gameMath::checkcollisionX(playerX, playerY, trapCollider.x,
                                          trapCollider.y,
@@ -423,9 +425,8 @@ bool TrapBuilder::checkPogoTarget(const SDL_FRect& slashBox, float& outX, float&
             case TrapType::FIRE:      pogoable = trap.status == TrapStatus::ON; break;  // only while it is lit (= a hazard)
             default:                  pogoable = false; break;
         }
-        // a downward slash only bounces off hazards whose tips face up (not wall / ceiling spikes)
-        if((trap.type == TrapType::SPIKES || trap.type == TrapType::FIRE) && trap.orientation != TrapOrientation::UP)
-            pogoable = false;
+        // orientation does not matter: wall / ceiling spikes bounce the player just like floor ones, as long as the
+        // slash box touches the (already orientation-aware) hazard hit box below
         if(!pogoable) continue;
 
         const SDL_FRect box = getHazardHitBox(trap);

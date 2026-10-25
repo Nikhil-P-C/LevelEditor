@@ -10,6 +10,7 @@
 
 #include "engine/Engine.h"
 #include "utils/utils.h"
+#include "level/Bosses.h"
 
 namespace fs = std::filesystem;
 
@@ -38,7 +39,7 @@ const SDL_Color cBad{240, 100, 100, 255};
 // palette tab order (the order people reach for things)
 const Kind kTabs[] = {Kind::WALL, Kind::GROUND, Kind::PLATFORM, Kind::BLOCK, Kind::FRUIT, Kind::TRAP, Kind::ENEMY,
                       Kind::NPC, Kind::CHECKPOINT, Kind::SPAWN, Kind::LIGHT, Kind::BACKGROUND, Kind::FOREGROUND,
-                      Kind::WORLD_RECT};
+                      Kind::BOSS, Kind::ARENA, Kind::WORLD_RECT};
 
 EditorState* s_instance = nullptr;
 
@@ -308,7 +309,7 @@ void EditorState::frameAll() {
 // ================================================================================================
 SDL_FRect EditorState::objBounds(const Obj& o) const {
     SDL_FRect b = worldBounds(o);
-    if (o.kind == Kind::TRAP || o.kind == Kind::ENEMY) {
+    if (o.kind == Kind::TRAP || o.kind == Kind::ENEMY || o.kind == Kind::BOSS) {
         SDL_FRect s;
         if (m_scene.boundsFor(o.id, s)) b = s;
     }
@@ -328,6 +329,7 @@ bool EditorState::selectable(const Obj& o) const {
     if (o.kind == Kind::BACKGROUND) return m_tab == Kind::BACKGROUND;
     if (o.kind == Kind::FOREGROUND) return m_tab == Kind::FOREGROUND;
     if (o.kind == Kind::WORLD_RECT) return m_tab == Kind::WORLD_RECT;
+    if (o.kind == Kind::ARENA) return m_tab == Kind::ARENA;
     return true;
 }
 
@@ -507,14 +509,143 @@ Obj EditorState::brushObject(Kind kind, const std::string& preset, float wx, flo
         if (kind == Kind::FRUIT) { x -= 64.0f; y -= 64.0f; }              // centre the fruit on the cursor
         else if (kind == Kind::ENEMY) { x -= 20.0f; y -= 85.0f; }         // feet on the cursor
         else if (kind == Kind::SPAWN) { x -= 20.0f; y -= 85.0f; }
+        else if (kind == Kind::BOSS) { x -= 100.0f; y -= 150.0f; }        // it falls to the floor from here
         o = makeDefault(kind, preset, x, y);
         if (kind == Kind::TRAP && trapCanRotate(o.s[0])) o.s[5] = m_brushFacing;
     }
     return o;
 }
 
+// Boss levels 11..23 of the game, taken one by one. All of them: approach along x 0..2400, then the 1600 px wide arena (A);
+// the floor is the bottom of the world bounds (R, floor = 656 in those levels) and the arena reaches 48 px below it; the boss
+// spawns at its own spot inside the arena; the exit flag (C) sits behind the fight. NO arena has platforms except two:
+//   level 12  Cave Spider : three one-way platforms inside the arena
+//   level 23  The Preacher: phase 3 is fought in an UPPER arena 3840 px higher (BOSS_PREACHER_UPPER_RISE), the level has a wide
+//                           platform there as its ground, the world bounds reach up to it and the exit flag is up there too
+namespace {
+enum class BossExtra { NONE, SPIDER_PLATFORMS, PREACHER_UPPER };
+struct BossLayout {
+    const char* type;
+    float arenaTop;      // arena y in the shipped level (floor = 656)
+    float arenaH;
+    float bossDx;        // boss x - arena x
+    float bossY;         // boss y in the shipped level (floor = 656)
+    const char* plat;    // platform sprite of the biome (used by the extras)
+    BossExtra extra;
+};
+const BossLayout kBossLayouts[] = {
+    {"MOSS_LUMINOUS_WYRM",      0.0f,    704.0f,  935.0f, 490.0f, "WOODEN_PLATFORM", BossExtra::NONE},              // level 11
+    {"MOSS_CAVE_SPIDER",        0.0f,    704.0f,  985.0f, 490.0f, "WOODEN_PLATFORM", BossExtra::SPIDER_PLATFORMS},  // 12
+    {"STONE_GIANT_RAT",      -320.0f,   1024.0f, 1015.0f, 510.0f, "STONE_PLATFORM",  BossExtra::NONE},              // 13
+    {"STONE_ANCIENT_SINNER", -896.0f,   1600.0f,  975.0f, 350.0f, "STONE_PLATFORM",  BossExtra::NONE},              // 14
+    {"SHAFT_WARDEN",         -320.0f,   1024.0f, 1000.0f, 450.0f, "WOODEN_PLATFORM", BossExtra::NONE},              // 15
+    {"SHAFT_BRONTOS",        -896.0f,   1600.0f,  950.0f, 360.0f, "WOODEN_PLATFORM", BossExtra::NONE},              // 16
+    {"PLAINS_ANKYLOSAUR",    -320.0f,   1024.0f,  975.0f, 480.0f, "WOODEN_PLATFORM", BossExtra::NONE},              // 17
+    {"PLAINS_SENTINEL_PARA", -576.0f,   1280.0f, 1015.0f, 425.0f, "WOODEN_PLATFORM", BossExtra::NONE},              // 18
+    {"WOODS_THORN_MATRIARCH",-576.0f,   1280.0f, 1000.0f, 380.0f, "WOODEN_PLATFORM", BossExtra::NONE},              // 19
+    {"WOODS_TREEHORN_ELDER", -896.0f,   1600.0f,  965.0f, 390.0f, "WOODEN_PLATFORM", BossExtra::NONE},              // 20
+    {"MOUNTAIN_CAT_QUEEN",   -576.0f,   1280.0f, 1015.0f, 515.0f, "STONE_PLATFORM",  BossExtra::NONE},              // 21
+    {"MOUNTAIN_BROTHER",     -896.0f,   1600.0f,  965.0f, 350.0f, "STONE_PLATFORM",  BossExtra::NONE},              // 22
+    {"PEAK_THE_PREACHER",    -320.0f,   1024.0f, 1010.0f, 370.0f, "GOLD_PLATFORM",   BossExtra::PREACHER_UPPER},    // 23
+};
+constexpr float kShippedFloor = 640.0f;     // floor surface in those levels (R is 656 tall there: the game rounds it to whole tiles)
+constexpr float kArenaW = 1600.0f;
+constexpr float kPreacherRise = 3840.0f;    // = BOSS_PREACHER_UPPER_RISE
+}
+
+void EditorState::placeBoss(float wx, float wy) {
+    const KindInfo& ki = info(Kind::BOSS);
+    std::string type = m_brush.preset.empty() && ki.presets && !ki.presets->empty() ? (*ki.presets)[0] : m_brush.preset;
+    const BossLayout* lay = nullptr;
+    for (const BossLayout& l : kBossLayouts) if (type == l.type) lay = &l;
+    static const BossLayout kFallback{"", 0.0f, 704.0f, 960.0f, 490.0f, "WOODEN_PLATFORM", BossExtra::NONE};
+    if (!lay) lay = &kFallback;
+
+    const Boss probe(0.0f, 0.0f, bossTypeFromName(type));        // real hitbox of this boss
+    const float bw = probe.w, bh = probe.h;
+    const bool preacher = lay->extra == BossExtra::PREACHER_UPPER;
+
+    beginEdit();
+    // copies, not pointers: adding objects below may reallocate the model's vector
+    const bool hasBounds = m_model.first(Kind::WORLD_RECT) != nullptr;
+    const Obj bounds = hasBounds ? *m_model.first(Kind::WORLD_RECT) : Obj{};
+    const bool hasArena = m_model.first(Kind::ARENA) != nullptr;
+    const Obj existingArena = hasArena ? *m_model.first(Kind::ARENA) : Obj{};
+    const bool hasExit = m_model.first(Kind::CHECKPOINT) != nullptr;
+    const Obj existingExit = hasExit ? *m_model.first(Kind::CHECKPOINT) : Obj{};
+
+    // F = the floor SURFACE the boss fight happens on. The game computes it from the wall collision rect (R) exactly like
+    // BossBuilder::wallBottomOf: y + ceil(h / 64) * 64 - 64 (so 640 for the shipped `R 0 0 4000 656`), NOT from R's raw bottom edge.
+    // Without an R the click height is the floor.
+    const float F = hasBounds ? bounds.y + std::ceil(bounds.h / kTile) * kTile - kTile : snap(wy);
+    float bossX = snap(wx) - bw * 0.5f;
+    std::string what;
+
+    if (!hasArena) {
+        // --- arena: the boss sits at its usual spot inside it; it reaches one tile below the floor surface (704 vs 640 in the game)
+        const float ax = bossX - lay->bossDx;
+        const float ay = F + (lay->arenaTop - kShippedFloor);
+        Obj a = makeDefault(Kind::ARENA, "", ax, ay);
+        a.w = kArenaW; a.h = lay->arenaH;
+        m_model.add(a);
+        what = "arena";
+
+        // --- world bounds (R) must contain the arena (the Preacher's reach up to his upper arena). The collision floor has to stay at F:
+        // floor = top + ceil(h/64)*64 - 64, so the new top is moved in whole tiles and h = (F - top) + 16 like the shipped levels (656 for 640).
+        const float needTop = preacher ? ay - kPreacherRise : ay;
+        float top = needTop;
+        if (hasBounds) top = std::min(bounds.y, needTop);
+        top = F - kTile * std::ceil((F - top) / kTile);                    // F - top is a whole number of tiles
+        const float left  = hasBounds ? std::min(bounds.x, ax) : std::min(0.0f, ax);
+        const float right = hasBounds ? std::max(bounds.x + bounds.w, ax + kArenaW) : ax + kArenaW;
+        Obj r = hasBounds ? bounds : makeDefault(Kind::WORLD_RECT, "", left, top);
+        r.x = left; r.y = top; r.w = right - left; r.h = (F - top) + 16.0f;
+        m_model.add(r);                                                    // singleton: replaces the old one
+        what += ", world bounds";
+
+        auto plat = [&](float px, float py, float pw) {
+            Obj p = makeDefault(Kind::PLATFORM, lay->plat, px, py);
+            p.w = pw; p.h = 16.0f;                                         // stored units (x4 px), like the shipped levels
+            p.s[0] = "ONE_WAY";
+            m_model.add(p);
+        };
+        if (lay->extra == BossExtra::SPIDER_PLATFORMS) {                   // level 12: y 500 / 360 / 500 over a floor of 640
+            plat(ax + 160.0f,  F - 140.0f, 64.0f);
+            plat(ax + 640.0f,  F - 280.0f, 64.0f);
+            plat(ax + 1160.0f, F - 140.0f, 64.0f);
+            what += ", 3 platforms";
+        } else if (preacher) {                                             // level 23: ground of the upper arena + the exit up there
+            const float upperY = F - kPreacherRise;
+            plat(ax - 32.0f, upperY, 408.0f);
+            what += ", upper-arena platform";
+            if (!(hasExit && existingExit.y < upperY)) {
+                Obj c = makeDefault(Kind::CHECKPOINT, "", ax + 1240.0f, upperY - 264.0f);
+                m_model.add(c);                                            // singleton: replaces the old exit
+                what += ", exit flag upstairs";
+            }
+        }
+        // --- the level's exit only opens once the boss is dead: put one behind the fight if the level has none
+        if (!preacher && !hasExit) {
+            Obj c = makeDefault(Kind::CHECKPOINT, "", ax + 1240.0f, F - 264.0f);
+            m_model.add(c);
+            what += ", exit flag";
+        }
+    } else {
+        bossX = std::clamp(bossX, existingArena.x, existingArena.x + existingArena.w - bw);   // an arena already exists: just drop the boss into it
+    }
+
+    // the shipped spawn height, but never with the hitbox inside the floor (the Preacher is 330 px tall: 370 + 330 would sink 60 px into it)
+    const float bossY = std::min(F + (lay->bossY - kShippedFloor), F - bh - 2.0f);
+    Obj b = makeDefault(Kind::BOSS, type, bossX, bossY);
+    const int id = m_model.add(b);
+    m_selection.assign(1, id);
+    setStatus(!what.empty() ? "Placed boss with " + what + " - edit any of them" : "Placed boss inside the existing arena");
+    if (!what.empty()) centerOn(bossX + bw * 0.5f, F - 300.0f);
+}
+
 void EditorState::placeBrush(float wx, float wy, float wx2, float wy2, bool dragged) {
     if (!m_brush.active) return;
+    if (m_brush.kind == Kind::BOSS) { placeBoss(wx, wy); return; }
     const KindInfo& ki = info(m_brush.kind);
     Obj o = brushObject(m_brush.kind, m_brush.preset, wx, wy, wx2, wy2, dragged);
     beginEdit();
@@ -1088,7 +1219,7 @@ void EditorState::drawObjectOutline(const Obj& o, bool selected) {
     worldToScreen(b.x, b.y, sx, sy);
     const SDL_FRect s{sx, sy, b.w * m_zoom, b.h * m_zoom};
     const SDL_Color col = ki.color;
-    const bool dimLayer = !selectable(o) && (o.kind == Kind::BACKGROUND || o.kind == Kind::FOREGROUND || o.kind == Kind::WORLD_RECT);
+    const bool dimLayer = !selectable(o) && (o.kind == Kind::BACKGROUND || o.kind == Kind::FOREGROUND || o.kind == Kind::WORLD_RECT || o.kind == Kind::ARENA);
     const Uint8 a = selected ? 255 : (dimLayer ? 50 : 120);
 
     if (o.kind == Kind::SPAWN) {
@@ -1105,8 +1236,13 @@ void EditorState::drawObjectOutline(const Obj& o, bool selected) {
         m_gfx.fill(s, withAlpha(col, 40));
     } else if (o.kind == Kind::WORLD_RECT) {
         m_gfx.dashedFrame(s, withAlpha(col, a), 10.0f);
+    } else if (o.kind == Kind::ARENA) {
+        m_gfx.fill(s, withAlpha(col, selected ? 40 : 18));
+        m_gfx.dashedFrame(s, withAlpha(col, selected ? 255 : std::max<int>(a, 120)), 14.0f);
+    } else if (o.kind == Kind::BOSS) {
+        m_gfx.fill(s, withAlpha(col, selected ? 70 : 40));
     }
-    if (o.kind != Kind::WORLD_RECT && o.kind != Kind::LIGHT) m_gfx.frame(s, withAlpha(col, a));
+    if (o.kind != Kind::WORLD_RECT && o.kind != Kind::LIGHT && o.kind != Kind::ARENA) m_gfx.frame(s, withAlpha(col, a));
     if (selected) m_gfx.frame({s.x - 1, s.y - 1, s.w + 2, s.h + 2}, {255, 255, 255, 230});
 
     // label
@@ -1114,6 +1250,8 @@ void EditorState::drawObjectOutline(const Obj& o, bool selected) {
         std::string label = std::string(1, ki.tag) + " " + presetOf(o);
         if (o.kind == Kind::NPC) label = "I " + o.s[0];
         if (o.kind == Kind::WORLD_RECT) label = "R world bounds";
+        if (o.kind == Kind::ARENA) label = "A boss arena";
+        if (o.kind == Kind::BOSS) label = "K " + presetOf(o);
         if (o.kind == Kind::CHECKPOINT) label = "C goal";
         if (o.kind == Kind::SPAWN) label = "S spawn";
         m_gfx.text(label, s.x + 3, s.y - 15, 14, withAlpha(col, selected ? 255 : 190));
@@ -1208,7 +1346,8 @@ void EditorState::drawGhost() {
                     : brushObject(kind, preset, wx, wy, wx, wy, false);
 
     // real textures: a one-object scene built from the game's own loader + builders
-    const bool hasArt = kind != Kind::NPC && kind != Kind::LIGHT && kind != Kind::WORLD_RECT && kind != Kind::SPAWN;
+    const bool hasArt = kind != Kind::NPC && kind != Kind::LIGHT && kind != Kind::WORLD_RECT && kind != Kind::SPAWN &&
+                        kind != Kind::BOSS && kind != Kind::ARENA;
     if (m_ghostTex && hasArt) {
         LevelModel gm;
         gm.add(o);
@@ -1325,7 +1464,8 @@ SDL_Texture* EditorState::thumbnail(Kind kind, const std::string& preset) {
 
     const KindInfo& ki = info(kind);
     Obj o = makeDefault(kind, preset, 0, 0);
-    const bool hasArt = kind != Kind::NPC && kind != Kind::LIGHT && kind != Kind::WORLD_RECT && kind != Kind::SPAWN;
+    const bool hasArt = kind != Kind::NPC && kind != Kind::LIGHT && kind != Kind::WORLD_RECT && kind != Kind::SPAWN &&
+                        kind != Kind::BOSS && kind != Kind::ARENA;
 
     // the palette's scissor must not apply to this offscreen target (and a clip + render scale would shrink it)
     const bool hadClip = SDL_RenderClipEnabled(m_renderer);
@@ -1385,7 +1525,8 @@ void EditorState::drawPalette() {
         if (clicked(r) && !m_modal.active) { m_tab = k; m_brush.active = false; m_paletteScroll = 0; }
         i++;
     }
-    const float listTop = y0 + 7 * (bh + 3) + 6;
+    const int tabRows = ((int)(sizeof(kTabs) / sizeof(kTabs[0])) + 1) / 2;
+    const float listTop = y0 + (float)tabRows * (bh + 3) + 6;
     m_gfx.line(6, listTop - 3, kLeft - 6, listTop - 3, cLine);
 
     // items of the active tab
@@ -1571,6 +1712,10 @@ void EditorState::drawLevelSettings(float x, float& y, float w) {
         row("Player softness", m_model.ambient.softness, &Ambient::softness, 0);
     }
     y += 8;
+    m_gfx.text("WEATHER / SUN", x, y, 16, cAccent);
+    y += 22;
+    drawWeatherFields(x, y, w);
+    y += 8;
     m_gfx.text("MUSIC", x, y, 16, cAccent);
     y += 22;
     {
@@ -1643,6 +1788,201 @@ void EditorState::drawLevelSettings(float x, float& y, float w) {
     if (m_model.count(Kind::SPAWN) == 0) { m_gfx.text("! no spawn point (S)", x, y, 15, cBad); y += 18; }
     if (m_model.count(Kind::CHECKPOINT) == 0) { m_gfx.text("! no checkpoint (C) - level has no goal", x, y, 15, cBad); y += 18; }
     if (m_model.count(Kind::WORLD_RECT) == 0) { m_gfx.text("! no world bounds (R)", x, y, 15, cBad); y += 18; }
+    if (m_model.count(Kind::ARENA) && m_model.count(Kind::BOSS) == 0) { m_gfx.text("! boss arena (A) but no boss (K)", x, y, 15, cBad); y += 18; }
+    if (m_model.count(Kind::BOSS) && m_model.count(Kind::ARENA) == 0) { m_gfx.text("boss without arena (A): one screen around it", x, y, 14, cDim); y += 18; }
+}
+
+// weather / ambience / sun as fields: the Z line of the level file is generated from these (see weatherToLine)
+void EditorState::drawWeatherFields(float x, float& y, float w) {
+    Weather& wx = m_model.weather;
+    const float fh = 24.0f, gap = 5.0f, lw = 108.0f;
+    const float btnW = 56.0f;
+
+    if (button({x, y, w, fh}, wx.has ? "Weather / sun settings: ON" : "Weather / sun settings: OFF (biome decides)", wx.has)) {
+        beginEdit();
+        wx.has = !wx.has;
+        if (wx.has && weatherToLine(wx) == "NONE") wx.autoBase = true;      // switching it on = the biome's normal ambience
+    }
+    y += fh + gap;
+    if (!wx.has) return;
+
+    if (button({x, y, w, fh}, wx.autoBase ? "Keep biome ambience: YES" : "Keep biome ambience: NO (only what is set)", wx.autoBase)) {
+        beginEdit();
+        wx.autoBase = !wx.autoBase;
+    }
+    y += fh + gap;
+
+    // ready-made looks
+    {
+        const auto& names = weatherPresetNames();
+        const int perRow = 4;
+        const float q = (w - (perRow - 1) * 4.0f) / perRow;
+        for (size_t i = 0; i < names.size(); i++) {
+            const int col = (int)(i % perRow), rowN = (int)(i / perRow);
+            const SDL_FRect r{x + col * (q + 4.0f), y + rowN * (fh + 3.0f), q, fh};
+            if (button(r, names[i])) {
+                beginEdit();
+                weatherPreset(wx, names[i]);
+            }
+        }
+        y += (float)((names.size() + perRow - 1) / perRow) * (fh + 3.0f) + 4.0f;
+    }
+
+    auto rowRect = [&](const std::string& label) {
+        m_gfx.text(label, x, y + 4, 15, cDim);
+        return SDL_FRect{x + lw, y, w - lw, fh};
+    };
+
+    // one number cell that edits p[i].v[k] (clamped to the parameter's range)
+    auto cell = [&](const SDL_FRect& r, int fieldId, int i, int k, int dec) {
+        const float lo = wxInfo(i).lo, hi = wxInfo(i).hi;
+        numberField(r, fieldId, wx.p[i].v[k], [this, i, k, lo, hi](float v) {
+            beginEdit();
+            m_model.weather.p[i].v[k] = std::clamp(v, lo, hi);
+        }, dec);
+    };
+
+    // ---- weather flags: Biome / ON strength / OFF
+    for (int i = WX_RAIN; i <= WX_SUNFLARE; i++) {
+        const WxParamInfo& pi = wxInfo(i);
+        WxValue& v = wx.p[i];
+        const SDL_FRect r = rowRect(pi.label);
+        const char* txt = v.mode == 0 ? "Biome" : (v.mode == 1 ? "ON" : "OFF");
+        if (button({r.x, r.y, btnW, fh}, txt, v.mode == 1)) {
+            beginEdit();
+            v.mode = (v.mode + 1) % 3;
+            if (v.mode == 1) v.v[0] = pi.def;
+        }
+        if (v.mode == 1) cell({r.x + btnW + 4, r.y, r.w - btnW - 4, fh}, 3000 + i * 8, i, 0, 2);
+        y += fh + gap;
+    }
+    // ---- plain numbers: Biome / set
+    for (int i = WX_SNOWSIZE; i <= WX_SOUND; i++) {
+        const WxParamInfo& pi = wxInfo(i);
+        WxValue& v = wx.p[i];
+        const SDL_FRect r = rowRect(pi.label);
+        if (button({r.x, r.y, btnW, fh}, v.mode == 1 ? "SET" : "Biome", v.mode == 1)) {
+            beginEdit();
+            v.mode = v.mode == 1 ? 0 : 1;
+            if (v.mode == 1) v.v[0] = pi.def;
+        }
+        if (v.mode == 1) cell({r.x + btnW + 4, r.y, r.w - btnW - 4, fh}, 3000 + i * 8, i, 0, 2);
+        y += fh + gap;
+    }
+    // ---- colour (r g b)
+    auto colourRow = [&](int i) {
+        const WxParamInfo& pi = wxInfo(i);
+        WxValue& v = wx.p[i];
+        const SDL_FRect r = rowRect(pi.label);
+        if (button({r.x, r.y, btnW, fh}, v.mode == 1 ? "SET" : "Biome", v.mode == 1)) {
+            beginEdit();
+            v.mode = v.mode == 1 ? 0 : 1;
+            if (v.mode == 1) {
+                if (i == WX_GLOW) { v.v[0] = 150; v.v[1] = 255; v.v[2] = 120; }
+                else              { v.v[0] = 255; v.v[1] = 222; v.v[2] = 165; }
+            }
+        }
+        y += fh + gap;
+        if (v.mode == 1) {
+            const float cw = (w - 8.0f) / 3.0f;
+            for (int k = 0; k < 3; k++) cell({x + k * (cw + 4.0f), y, cw, fh}, 3000 + i * 8 + k, i, k, 0);
+            y += fh + gap;
+        }
+    };
+    colourRow(WX_GLOW);
+
+    // ---- footsteps
+    {
+        const SDL_FRect r = rowRect("Footsteps");
+        const auto& opts = wxStepSurfaces();
+        int idx = -1;
+        for (size_t k = 0; k < opts.size(); k++) if (opts[k] == wx.steps) idx = (int)k;
+        const SDL_FRect left{r.x, r.y, 22, fh}, right{r.x + r.w - 22, r.y, 22, fh}, mid{r.x + 24, r.y, r.w - 48, fh};
+        int dir = 0;
+        if (button(left, "<")) dir = -1;
+        if (button(right, ">")) dir = 1;
+        m_gfx.fill(mid, cPanel2);
+        m_gfx.frame(mid, cLine);
+        m_gfx.text(idx < 0 ? "Automatic" : opts[idx], mid.x + mid.w * 0.5f, mid.y + 4, 15, cText, Align::CENTER);
+        if (clicked(mid) && !m_modal.active) dir = 1;
+        if (dir != 0) {
+            beginEdit();
+            const int n = (int)opts.size() + 1;                    // +1 = automatic
+            int next = ((idx + 1) + dir + n) % n - 1;
+            wx.steps = next < 0 ? std::string() : opts[next];
+        }
+        y += fh + gap;
+    }
+
+    // ---- sun
+    y += 4;
+    m_gfx.text("Sun", x, y, 15, cAccent);
+    y += 20;
+    {
+        static const char* kModes[4] = {"Biome decides", "Preset", "Fixed position", "Moving across the level"};
+        const SDL_FRect r = rowRect("Placement");
+        const SDL_FRect left{r.x, r.y, 22, fh}, right{r.x + r.w - 22, r.y, 22, fh}, mid{r.x + 24, r.y, r.w - 48, fh};
+        int dir = 0;
+        if (button(left, "<")) dir = -1;
+        if (button(right, ">")) dir = 1;
+        m_gfx.fill(mid, cPanel2);
+        m_gfx.frame(mid, cLine);
+        std::string shown = kModes[std::clamp(wx.sunMode, 0, 3)];
+        while (shown.size() > 3 && m_gfx.textWidth(shown, 15) > mid.w - 8) shown.pop_back();
+        m_gfx.text(shown, mid.x + mid.w * 0.5f, mid.y + 4, 15, cText, Align::CENTER);
+        if (clicked(mid) && !m_modal.active) dir = 1;
+        if (dir != 0) { beginEdit(); wx.sunMode = (wx.sunMode + dir + 4) % 4; }
+        y += fh + gap;
+    }
+    if (wx.sunMode == 1) {
+        const SDL_FRect r = rowRect("Time of day");
+        const auto& opts = wxSunPresets();
+        int idx = 0;
+        for (size_t k = 0; k < opts.size(); k++) if (opts[k] == wx.sunPreset) idx = (int)k;
+        const SDL_FRect left{r.x, r.y, 22, fh}, right{r.x + r.w - 22, r.y, 22, fh}, mid{r.x + 24, r.y, r.w - 48, fh};
+        int dir = 0;
+        if (button(left, "<")) dir = -1;
+        if (button(right, ">")) dir = 1;
+        m_gfx.fill(mid, cPanel2);
+        m_gfx.frame(mid, cLine);
+        m_gfx.text(opts[idx], mid.x + mid.w * 0.5f, mid.y + 4, 15, cText, Align::CENTER);
+        if (clicked(mid) && !m_modal.active) dir = 1;
+        if (dir != 0) { beginEdit(); const int n = (int)opts.size(); wx.sunPreset = opts[(idx + dir + n) % n]; }
+        y += fh + gap;
+    } else if (wx.sunMode == 2) {
+        m_gfx.text("screen fractions: 0,0 = top left  1,1 = bottom right", x, y, 13, cDim);
+        y += 16;
+        for (int k = 0; k < 2; k++) {
+            const SDL_FRect r = rowRect(k == 0 ? "Sun X" : "Sun Y");
+            numberField(r, 3200 + k, wx.sunPos[k], [this, k](float v) { beginEdit(); m_model.weather.sunPos[k] = std::clamp(v, -1.0f, 2.0f); }, 2);
+            y += fh + gap;
+        }
+    } else if (wx.sunMode == 3) {
+        m_gfx.text("screen fractions at the start and at the end", x, y, 13, cDim);
+        y += 16;
+        static const char* kPathLabels[4] = {"Start X", "Start Y", "End X", "End Y"};
+        for (int k = 0; k < 4; k++) {
+            const SDL_FRect r = rowRect(kPathLabels[k]);
+            numberField(r, 3210 + k, wx.sunPath[k], [this, k](float v) { beginEdit(); m_model.weather.sunPath[k] = std::clamp(v, -1.0f, 2.0f); }, 2);
+            y += fh + gap;
+        }
+    }
+    // sun flare strength, size, drift, colour
+    for (int i : {(int)WX_SUNSIZE, (int)WX_SUNDRIFT}) {        // (flare strength is in the weather list above)
+        const WxParamInfo& pi = wxInfo(i);
+        WxValue& v = wx.p[i];
+        const SDL_FRect r = rowRect(pi.label);
+        if (button({r.x, r.y, btnW, fh}, v.mode == 1 ? "SET" : "Biome", v.mode == 1)) {
+            beginEdit();
+            v.mode = v.mode == 1 ? 0 : 1;
+            if (v.mode == 1) v.v[0] = pi.def;
+        }
+        if (v.mode == 1) cell({r.x + btnW + 4, r.y, r.w - btnW - 4, fh}, 3000 + i * 8, i, 0, 2);
+        y += fh + gap;
+    }
+    colourRow(WX_SUNCOLOR);
+    m_gfx.text("The flare fades with the level's darkness (keep D <= 0.3).", x, y, 13, cDim);
+    y += 18;
 }
 
 void EditorState::drawInspector() {
